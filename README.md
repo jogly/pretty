@@ -71,6 +71,7 @@ printer := pretty.New().WithColorMode(pretty.ColorNever)
 ## Color Scheme
 
 When colors are enabled:
+
 - **Strings**: Green
 - **Numbers**: Blue
 - **Booleans**: Yellow
@@ -108,6 +109,7 @@ fmt.Println(pretty.Print(person))
 ```
 
 Output:
+
 ```
 Person{
   Name: "John",

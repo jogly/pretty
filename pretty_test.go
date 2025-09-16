@@ -1,6 +1,8 @@
 package pretty
 
 import (
+	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -320,5 +322,57 @@ func TestMapKeySorting(t *testing.T) {
 	expected = "{\n  \"aaa_another_key\": \"value2\",\n  \"mmm_middle_key\": \"value3\",\n  \"zzz_very_long_key\": \"value1\"\n}"
 	if result != expected {
 		t.Errorf("Multi-line map keys not sorted correctly:\ngot:  %q\nwant: %q", result, expected)
+	}
+}
+
+// mockReadCloser implements io.ReadCloser for testing
+type mockReadCloser struct {
+	*strings.Reader
+}
+
+func (m *mockReadCloser) Close() error {
+	return nil
+}
+
+func newMockReadCloser(content string) io.ReadCloser {
+	return &mockReadCloser{
+		Reader: strings.NewReader(content),
+	}
+}
+
+func TestReadCloserFormatting(t *testing.T) {
+	// Test with mockReadCloser (implements ReadCloser)
+	readCloser := newMockReadCloser("test content")
+	defer readCloser.Close()
+
+	printer := New().WithColorMode(ColorNever)
+	result := printer.Print(readCloser)
+	expected := "<io.ReadCloser>"
+
+	if result != expected {
+		t.Errorf("Expected %q, got %q", expected, result)
+	}
+
+	// Test with strings.Reader (does not implement ReadCloser)
+	reader := strings.NewReader("test content")
+	result = printer.Print(reader)
+
+	// Should not show <io.ReadCloser> since strings.Reader doesn't implement io.ReadCloser
+	if result == "<io.ReadCloser>" {
+		t.Error("strings.Reader should not be formatted as <io.ReadCloser>")
+	}
+
+	// Test in a struct
+	data := struct {
+		ReadCloser io.ReadCloser
+		Reader     *strings.Reader
+	}{
+		ReadCloser: readCloser,
+		Reader:     reader,
+	}
+
+	result = printer.Print(data)
+	if !strings.Contains(result, "<io.ReadCloser>") {
+		t.Error("Expected struct to contain <io.ReadCloser> for ReadCloser field")
 	}
 }

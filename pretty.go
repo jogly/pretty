@@ -17,6 +17,7 @@ package pretty
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"sort"
@@ -129,6 +130,13 @@ func Print(v interface{}) string {
 func (p *Printer) formatValue(val reflect.Value, indent int) string {
 	if !val.IsValid() {
 		return p.colorize("invalid", colorRed)
+	}
+
+	// Check if the value implements io.ReadCloser
+	if val.IsValid() && val.CanInterface() {
+		if _, ok := val.Interface().(io.ReadCloser); ok {
+			return p.colorize("<io.ReadCloser>", colorMagenta)
+		}
 	}
 
 	switch val.Kind() {
