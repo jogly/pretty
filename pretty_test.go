@@ -455,3 +455,192 @@ func TestJSONInStructs(t *testing.T) {
 		t.Error("Expected Data field to contain quoted regular string")
 	}
 }
+
+func TestSliceTruncation(t *testing.T) {
+	printer := New().WithColorMode(ColorNever).WithMaxSliceLength(6)
+
+	tests := []struct {
+		name     string
+		input    []int
+		expected string
+	}{
+		{
+			name:     "short slice - no truncation",
+			input:    []int{1, 2, 3},
+			expected: "[1, 2, 3]",
+		},
+		{
+			name:     "exact limit - no truncation",
+			input:    []int{1, 2, 3, 4, 5, 6},
+			expected: "[1, 2, 3, 4, 5, 6]",
+		},
+		{
+			name:  "long slice - truncated",
+			input: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+			expected: "[\n  1,\n  2,\n  3,\n  ... 4 more elements ...,\n  8,\n  9,\n  10,\n  // Total length: 10\n]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := printer.Print(tt.input)
+			if result != tt.expected {
+				t.Errorf("Print(%v) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSliceTruncationDisabled(t *testing.T) {
+	// Test that MaxSliceLength = 0 disables truncation
+	printer := New().WithColorMode(ColorNever).WithMaxSliceLength(0)
+
+	longSlice := make([]int, 100)
+	for i := 0; i < 100; i++ {
+		longSlice[i] = i + 1
+	}
+
+	result := printer.Print(longSlice)
+
+	// Should contain all elements, not truncated
+	if !strings.Contains(result, "100") {
+		t.Error("Expected full slice to contain last element 100")
+	}
+	if strings.Contains(result, "more elements") {
+		t.Error("Expected no truncation when MaxSliceLength = 0")
+	}
+}
+
+func TestWithMaxSliceLength(t *testing.T) {
+	printer := New().WithMaxSliceLength(4)
+	if printer.MaxSliceLength != 4 {
+		t.Errorf("WithMaxSliceLength(4).MaxSliceLength = %d, want 4", printer.MaxSliceLength)
+	}
+
+	// Test chaining
+	result := New().WithMaxSliceLength(2).WithColorMode(ColorNever)
+	if result.MaxSliceLength != 2 {
+		t.Errorf("Chained WithMaxSliceLength(2).MaxSliceLength = %d, want 2", result.MaxSliceLength)
+	}
+	if result.ColorMode != ColorNever {
+		t.Errorf("Chained WithMaxSliceLength(2).WithColorMode(ColorNever).ColorMode = %v, want ColorNever", result.ColorMode)
+	}
+}
+
+func TestStringTruncation(t *testing.T) {
+	printer := New().WithColorMode(ColorNever).WithMaxStringLength(20)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "short string - no truncation",
+			input:    "hello world",
+			expected: `"hello world"`,
+		},
+		{
+			name:     "exact limit - no truncation",
+			input:    "twelve characters!!",
+			expected: `"twelve characters!!"`,
+		},
+		{
+			name:     "long string - truncated",
+			input:    "this is a very long string that should be truncated",
+			expected: `"this is ...truncated"`,
+		},
+		{
+			name:     "medium truncation",
+			input:    "hello world from testing",
+			expected: `"hello wo...m testing"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := printer.Print(tt.input)
+			if result != tt.expected {
+				t.Errorf("Print(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStringTruncationEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		maxLen    int
+		input     string
+		expected  string
+	}{
+		{
+			name:     "very small limit - fallback",
+			maxLen:   3,
+			input:    "hello world",
+			expected: `"hel"`,
+		},
+		{
+			name:     "minimum truncation size",
+			maxLen:   5,
+			input:    "hello world",
+			expected: `"h...d"`,
+		},
+		{
+			name:     "disabled truncation",
+			maxLen:   0,
+			input:    "this is a very long string that should not be truncated",
+			expected: `"this is a very long string that should not be truncated"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			printer := New().WithColorMode(ColorNever).WithMaxStringLength(tt.maxLen)
+			result := printer.Print(tt.input)
+			if result != tt.expected {
+				t.Errorf("Print(%q) with maxLen=%d = %q, want %q", tt.input, tt.maxLen, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStringTruncationInStructs(t *testing.T) {
+	printer := New().WithColorMode(ColorNever).WithMaxStringLength(15).WithMaxWidth(100)
+
+	data := struct {
+		Short string
+		Long  string
+	}{
+		Short: "hello",
+		Long:  "this is a very long field that should be truncated",
+	}
+
+	result := printer.Print(data)
+
+	// Should contain untruncated short string
+	if !strings.Contains(result, `"hello"`) {
+		t.Error("Expected Short field to remain untruncated")
+	}
+
+	// Should contain truncated long string - debug what we actually get
+	if !strings.Contains(result, "...") {
+		t.Errorf("Expected Long field to be truncated, got: %s", result)
+	}
+}
+
+func TestWithMaxStringLength(t *testing.T) {
+	printer := New().WithMaxStringLength(25)
+	if printer.MaxStringLength != 25 {
+		t.Errorf("WithMaxStringLength(25).MaxStringLength = %d, want 25", printer.MaxStringLength)
+	}
+
+	// Test chaining
+	result := New().WithMaxStringLength(10).WithColorMode(ColorNever)
+	if result.MaxStringLength != 10 {
+		t.Errorf("Chained WithMaxStringLength(10).MaxStringLength = %d, want 10", result.MaxStringLength)
+	}
+	if result.ColorMode != ColorNever {
+		t.Errorf("Chained WithMaxStringLength(10).WithColorMode(ColorNever).ColorMode = %v, want ColorNever", result.ColorMode)
+	}
+}

@@ -54,13 +54,21 @@ type Printer struct {
 	MaxWidth int
 	// ColorMode controls when colors are used in output
 	ColorMode ColorMode
+	// MaxSliceLength is the maximum number of elements to show in slices/arrays
+	// If 0, shows all elements (default behavior)
+	MaxSliceLength int
+	// MaxStringLength is the maximum length for individual strings before truncation
+	// If 0, no truncation is applied (default behavior)
+	MaxStringLength int
 }
 
 // New creates a new Printer with default options
 func New() *Printer {
 	return &Printer{
-		MaxWidth:  30,
-		ColorMode: ColorAuto,
+		MaxWidth:        30,
+		ColorMode:       ColorAuto,
+		MaxSliceLength:  0, // Show all elements by default
+		MaxStringLength: 0, // No string truncation by default
 	}
 }
 
@@ -77,16 +85,40 @@ func (p *Printer) Print(v interface{}) string {
 // WithMaxWidth creates a new Printer with the specified maximum width
 func (p *Printer) WithMaxWidth(width int) *Printer {
 	return &Printer{
-		MaxWidth:  width,
-		ColorMode: p.ColorMode,
+		MaxWidth:        width,
+		ColorMode:       p.ColorMode,
+		MaxSliceLength:  p.MaxSliceLength,
+		MaxStringLength: p.MaxStringLength,
 	}
 }
 
 // WithColorMode creates a new Printer with the specified color mode
 func (p *Printer) WithColorMode(mode ColorMode) *Printer {
 	return &Printer{
-		MaxWidth:  p.MaxWidth,
-		ColorMode: mode,
+		MaxWidth:        p.MaxWidth,
+		ColorMode:       mode,
+		MaxSliceLength:  p.MaxSliceLength,
+		MaxStringLength: p.MaxStringLength,
+	}
+}
+
+// WithMaxSliceLength creates a new Printer with the specified maximum slice length
+func (p *Printer) WithMaxSliceLength(maxLen int) *Printer {
+	return &Printer{
+		MaxWidth:        p.MaxWidth,
+		ColorMode:       p.ColorMode,
+		MaxSliceLength:  maxLen,
+		MaxStringLength: p.MaxStringLength,
+	}
+}
+
+// WithMaxStringLength creates a new Printer with the specified maximum string length
+func (p *Printer) WithMaxStringLength(maxLen int) *Printer {
+	return &Printer{
+		MaxWidth:        p.MaxWidth,
+		ColorMode:       p.ColorMode,
+		MaxSliceLength:  p.MaxSliceLength,
+		MaxStringLength: maxLen,
 	}
 }
 
@@ -148,7 +180,9 @@ func (p *Printer) formatValue(val reflect.Value, indent int) string {
 				return prettyJSON
 			}
 		}
-		return p.colorize(fmt.Sprintf(`"%s"`, str), colorGreen)
+		// Apply string truncation if needed
+		truncatedStr := p.truncateString(str)
+		return p.colorize(fmt.Sprintf(`"%s"`, truncatedStr), colorGreen)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return p.colorize(fmt.Sprintf("%d", val.Int()), colorBlue)
@@ -199,6 +233,14 @@ func (p *Printer) formatSlice(val reflect.Value, indent int) string {
 		return "[]"
 	}
 
+	// Check if slice is too long and should be truncated
+	length := val.Len()
+	shouldTruncate := p.MaxSliceLength > 0 && length > p.MaxSliceLength
+
+	if shouldTruncate {
+		return p.formatTruncatedSlice(val, indent, length)
+	}
+
 	// Try single line format first
 	var singleLineParts []string
 	for i := 0; i < val.Len(); i++ {
@@ -222,6 +264,48 @@ func (p *Printer) formatSlice(val reflect.Value, indent int) string {
 		elem := p.formatValue(val.Index(i), nextIndent)
 		parts = append(parts, indentStr+elem)
 	}
+
+	return fmt.Sprintf("[\n%s\n%s]", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
+}
+
+// formatTruncatedSlice formats a long slice by showing first few, last few, and a summary
+func (p *Printer) formatTruncatedSlice(val reflect.Value, indent int, totalLength int) string {
+	maxLen := p.MaxSliceLength
+	showCount := maxLen / 2 // Show half at beginning, half at end
+	if showCount < 1 {
+		showCount = 1
+	}
+
+	var parts []string
+	nextIndent := indent + 1
+	indentStr := strings.Repeat("  ", nextIndent)
+
+	// Show first elements
+	for i := 0; i < showCount && i < totalLength; i++ {
+		elem := p.formatValue(val.Index(i), nextIndent)
+		parts = append(parts, indentStr+elem)
+	}
+
+	// Add truncation indicator
+	omittedCount := totalLength - (2 * showCount)
+	if omittedCount > 0 {
+		truncMsg := fmt.Sprintf("... %d more elements ...", omittedCount)
+		parts = append(parts, indentStr+p.colorize(truncMsg, colorGray))
+	}
+
+	// Show last elements
+	startIdx := totalLength - showCount
+	if startIdx < showCount {
+		startIdx = showCount // Avoid overlap
+	}
+	for i := startIdx; i < totalLength; i++ {
+		elem := p.formatValue(val.Index(i), nextIndent)
+		parts = append(parts, indentStr+elem)
+	}
+
+	// Add summary comment
+	summary := fmt.Sprintf("// Total length: %d", totalLength)
+	parts = append(parts, indentStr+p.colorize(summary, colorGray))
 
 	return fmt.Sprintf("[\n%s\n%s]", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
 }
@@ -391,4 +475,31 @@ func (p *Printer) formatJSON(jsonStr string, indent int) string {
 
 	// Use our own formatter to format the parsed JSON with colors
 	return p.formatValue(reflect.ValueOf(parsed), indent)
+}
+
+// truncateString truncates a string with center ellipses if it exceeds MaxStringLength
+func (p *Printer) truncateString(str string) string {
+	if p.MaxStringLength <= 0 || len(str) <= p.MaxStringLength {
+		return str
+	}
+
+	maxLen := p.MaxStringLength
+	ellipses := "..."
+
+	// Need at least 4 characters to show something meaningful (at least 1 char + ... + 1 char)
+	if maxLen < 4 {
+		return str[:maxLen]
+	}
+
+	// Calculate how much space we have for actual content
+	contentLen := maxLen - len(ellipses)
+	leftLen := contentLen / 2
+	rightLen := contentLen - leftLen
+
+	// Handle edge case where string is shorter than expected after calculation
+	if leftLen + rightLen >= len(str) {
+		return str
+	}
+
+	return str[:leftLen] + ellipses + str[len(str)-rightLen:]
 }
