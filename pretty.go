@@ -17,28 +17,56 @@ package pretty
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
+)
+
+// ColorMode controls when colors are used
+type ColorMode int
+
+const (
+	// ColorAuto automatically detects if colors should be used based on terminal
+	ColorAuto ColorMode = iota
+	// ColorAlways always uses colors
+	ColorAlways
+	// ColorNever never uses colors
+	ColorNever
+)
+
+// ANSI color codes
+const (
+	colorReset   = "\033[0m"
+	colorRed     = "\033[31m"
+	colorGreen   = "\033[32m"
+	colorYellow  = "\033[33m"
+	colorBlue    = "\033[34m"
+	colorMagenta = "\033[35m"
+	colorCyan    = "\033[36m"
+	colorGray    = "\033[90m"
 )
 
 // Printer configures and performs pretty printing
 type Printer struct {
 	// MaxWidth is the maximum line width before breaking to multiple lines
 	MaxWidth int
+	// ColorMode controls when colors are used in output
+	ColorMode ColorMode
 }
 
 // New creates a new Printer with default options
 func New() *Printer {
 	return &Printer{
-		MaxWidth: 30,
+		MaxWidth:  30,
+		ColorMode: ColorAuto,
 	}
 }
 
 // Print formats any input value into a pretty-printed string representation
 func (p *Printer) Print(v interface{}) string {
 	if v == nil {
-		return "nil"
+		return p.colorize("nil", colorGray)
 	}
 
 	val := reflect.ValueOf(v)
@@ -48,8 +76,48 @@ func (p *Printer) Print(v interface{}) string {
 // WithMaxWidth creates a new Printer with the specified maximum width
 func (p *Printer) WithMaxWidth(width int) *Printer {
 	return &Printer{
-		MaxWidth: width,
+		MaxWidth:  width,
+		ColorMode: p.ColorMode,
 	}
+}
+
+// WithColorMode creates a new Printer with the specified color mode
+func (p *Printer) WithColorMode(mode ColorMode) *Printer {
+	return &Printer{
+		MaxWidth:  p.MaxWidth,
+		ColorMode: mode,
+	}
+}
+
+// shouldUseColors determines if colors should be used based on the color mode
+func (p *Printer) shouldUseColors() bool {
+	switch p.ColorMode {
+	case ColorAlways:
+		return true
+	case ColorNever:
+		return false
+	case ColorAuto:
+		return isTerminal(os.Stdout)
+	default:
+		return false
+	}
+}
+
+// isTerminal checks if the given file is a terminal
+func isTerminal(f *os.File) bool {
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fileInfo.Mode() & os.ModeCharDevice) != 0
+}
+
+// colorize wraps text with ANSI color codes if colors are enabled
+func (p *Printer) colorize(text, color string) string {
+	if !p.shouldUseColors() {
+		return text
+	}
+	return color + text + colorReset
 }
 
 // Print formats any input value into a pretty-printed string representation using default options
@@ -60,34 +128,34 @@ func Print(v interface{}) string {
 // formatValue recursively formats a reflect.Value with proper indentation
 func (p *Printer) formatValue(val reflect.Value, indent int) string {
 	if !val.IsValid() {
-		return "invalid"
+		return p.colorize("invalid", colorRed)
 	}
 
 	switch val.Kind() {
 	case reflect.String:
-		return fmt.Sprintf(`"%s"`, val.String())
+		return p.colorize(fmt.Sprintf(`"%s"`, val.String()), colorGreen)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return fmt.Sprintf("%d", val.Int())
+		return p.colorize(fmt.Sprintf("%d", val.Int()), colorBlue)
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return fmt.Sprintf("%d", val.Uint())
+		return p.colorize(fmt.Sprintf("%d", val.Uint()), colorBlue)
 
 	case reflect.Float32, reflect.Float64:
-		return fmt.Sprintf("%g", val.Float())
+		return p.colorize(fmt.Sprintf("%g", val.Float()), colorCyan)
 
 	case reflect.Bool:
-		return fmt.Sprintf("%t", val.Bool())
+		return p.colorize(fmt.Sprintf("%t", val.Bool()), colorYellow)
 
 	case reflect.Ptr:
 		if val.IsNil() {
-			return "nil"
+			return p.colorize("nil", colorGray)
 		}
 		return p.formatValue(val.Elem(), indent)
 
 	case reflect.Interface:
 		if val.IsNil() {
-			return "nil"
+			return p.colorize("nil", colorGray)
 		}
 		return p.formatValue(val.Elem(), indent)
 
