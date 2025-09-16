@@ -376,3 +376,82 @@ func TestReadCloserFormatting(t *testing.T) {
 		t.Error("Expected struct to contain <io.ReadCloser> for ReadCloser field")
 	}
 }
+
+func TestJSONFormatting(t *testing.T) {
+	printer := New().WithColorMode(ColorNever)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple JSON object",
+			input:    `{"name":"John","age":30}`,
+			expected: "{\"age\": 30, \"name\": \"John\"}",
+		},
+		{
+			name:     "JSON array",
+			input:    `[1,2,3]`,
+			expected: "[1, 2, 3]",
+		},
+		{
+			name:     "nested JSON",
+			input:    `{"user":{"name":"Alice","active":true},"count":5}`,
+			expected: "{\n  \"count\": 5,\n  \"user\": {\n    \"active\": true,\n    \"name\": \"Alice\"\n  }\n}",
+		},
+		{
+			name:     "not JSON - regular string",
+			input:    "hello world",
+			expected: `"hello world"`,
+		},
+		{
+			name:     "invalid JSON - looks like JSON but isn't",
+			input:    `{name:"John"}`,
+			expected: `"{name:"John"}"`,
+		},
+		{
+			name:     "empty JSON object",
+			input:    `{}`,
+			expected: "{}",
+		},
+		{
+			name:     "empty JSON array",
+			input:    `[]`,
+			expected: "[]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := printer.Print(tt.input)
+			if result != tt.expected {
+				t.Errorf("Print(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestJSONInStructs(t *testing.T) {
+	printer := New().WithColorMode(ColorNever).WithMaxWidth(100)
+
+	data := struct {
+		Config string
+		Data   string
+	}{
+		Config: `{"debug":true,"timeout":30}`,
+		Data:   "regular string",
+	}
+
+	result := printer.Print(data)
+
+	// Should contain pretty-printed JSON for Config field
+	if !strings.Contains(result, `"debug": true`) {
+		t.Error("Expected Config field to contain pretty-printed JSON")
+	}
+
+	// Should contain quoted string for Data field
+	if !strings.Contains(result, `"regular string"`) {
+		t.Error("Expected Data field to contain quoted regular string")
+	}
+}

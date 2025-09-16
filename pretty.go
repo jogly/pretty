@@ -141,7 +141,14 @@ func (p *Printer) formatValue(val reflect.Value, indent int) string {
 
 	switch val.Kind() {
 	case reflect.String:
-		return p.colorize(fmt.Sprintf(`"%s"`, val.String()), colorGreen)
+		str := val.String()
+		// Check if string is valid JSON and pretty-print it
+		if p.isJSON(str) {
+			if prettyJSON := p.formatJSON(str, indent); prettyJSON != "" {
+				return prettyJSON
+			}
+		}
+		return p.colorize(fmt.Sprintf(`"%s"`, str), colorGreen)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return p.colorize(fmt.Sprintf("%d", val.Int()), colorBlue)
@@ -356,4 +363,32 @@ func (p *Printer) keyToString(key reflect.Value) string {
 		// Fallback to formatted value for other types
 		return p.formatValue(key, 0)
 	}
+}
+
+// isJSON checks if a string is valid JSON
+func (p *Printer) isJSON(str string) bool {
+	if len(str) < 2 {
+		return false
+	}
+
+	// Quick check for JSON-like structure
+	trimmed := strings.TrimSpace(str)
+	if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+
+		var js json.RawMessage
+		return json.Unmarshal([]byte(str), &js) == nil
+	}
+	return false
+}
+
+// formatJSON formats a JSON string with proper indentation and colors
+func (p *Printer) formatJSON(jsonStr string, indent int) string {
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		return ""
+	}
+
+	// Use our own formatter to format the parsed JSON with colors
+	return p.formatValue(reflect.ValueOf(parsed), indent)
 }
