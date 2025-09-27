@@ -78,7 +78,7 @@ func TestPrint(t *testing.T) {
 		{
 			name:     "map with elements",
 			input:    map[string]int{"a": 1, "b": 2},
-			expected: "{\"a\": 1, \"b\": 2}",
+			expected: "{a: 1, b: 2}",
 		},
 		{
 			name:     "simple struct",
@@ -102,7 +102,7 @@ func TestPrint(t *testing.T) {
 		{
 			name:     "long map multi-line",
 			input:    map[string]string{"very_long_key": "very_long_value", "another_key": "another_value"},
-			expected: "{\n  \"another_key\": \"another_value\",\n  \"very_long_key\": \"very_long_value\"\n}",
+			expected: "{\n  another_key: \"another_value\",\n  very_long_key: \"very_long_value\"\n}",
 		},
 		{
 			name:     "short struct single-line",
@@ -238,13 +238,13 @@ func TestPrinterWithCustomWidth(t *testing.T) {
 			name:     "map with narrow width",
 			input:    map[string]int{"a": 1, "b": 2},
 			width:    10,
-			expected: "{\n  \"a\": 1,\n  \"b\": 2\n}",
+			expected: "{\n  a: 1,\n  b: 2\n}",
 		},
 		{
 			name:     "map with wide width",
 			input:    map[string]int{"a": 1, "b": 2},
 			width:    50,
-			expected: "{\"a\": 1, \"b\": 2}",
+			expected: "{a: 1, b: 2}",
 		},
 		{
 			name:     "struct with narrow width",
@@ -305,7 +305,7 @@ func TestMapKeySorting(t *testing.T) {
 	// Use a wide printer to ensure single-line output
 	printer := &Printer{MaxWidth: 100}
 	result := printer.Print(m)
-	expected := "{\"alpha\": 2, \"beta\": 3, \"gamma\": 4, \"zebra\": 1}"
+	expected := "{alpha: 2, beta: 3, gamma: 4, zebra: 1}"
 	if result != expected {
 		t.Errorf("Map keys not sorted correctly: got %q, want %q", result, expected)
 	}
@@ -319,7 +319,7 @@ func TestMapKeySorting(t *testing.T) {
 
 	narrowPrinter := &Printer{MaxWidth: 10} // Force multi-line
 	result = narrowPrinter.Print(longMap)
-	expected = "{\n  \"aaa_another_key\": \"value2\",\n  \"mmm_middle_key\": \"value3\",\n  \"zzz_very_long_key\": \"value1\"\n}"
+	expected = "{\n  aaa_another_key: \"value2\",\n  mmm_middle_key: \"value3\",\n  zzz_very_long_key: \"value1\"\n}"
 	if result != expected {
 		t.Errorf("Multi-line map keys not sorted correctly:\ngot:  %q\nwant: %q", result, expected)
 	}
@@ -388,7 +388,7 @@ func TestJSONFormatting(t *testing.T) {
 		{
 			name:     "simple JSON object",
 			input:    `{"name":"John","age":30}`,
-			expected: "{\"age\": 30, \"name\": \"John\"}",
+			expected: "{age: 30, name: \"John\"}",
 		},
 		{
 			name:     "JSON array",
@@ -398,7 +398,7 @@ func TestJSONFormatting(t *testing.T) {
 		{
 			name:     "nested JSON",
 			input:    `{"user":{"name":"Alice","active":true},"count":5}`,
-			expected: "{\n  \"count\": 5,\n  \"user\": {\n    \"active\": true,\n    \"name\": \"Alice\"\n  }\n}",
+			expected: "{\n  count: 5,\n  user: {active: true, name: \"Alice\"}\n}",
 		},
 		{
 			name:     "not JSON - regular string",
@@ -446,7 +446,7 @@ func TestJSONInStructs(t *testing.T) {
 	result := printer.Print(data)
 
 	// Should contain pretty-printed JSON for Config field
-	if !strings.Contains(result, `"debug": true`) {
+	if !strings.Contains(result, `debug: true`) {
 		t.Error("Expected Config field to contain pretty-printed JSON")
 	}
 
@@ -475,8 +475,8 @@ func TestSliceTruncation(t *testing.T) {
 			expected: "[1, 2, 3, 4, 5, 6]",
 		},
 		{
-			name:  "long slice - truncated",
-			input: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+			name:     "long slice - truncated",
+			input:    []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
 			expected: "[\n  1,\n  2,\n  3,\n  ... 4 more elements ...,\n  8,\n  9,\n  10,\n  // Total length: 10\n]",
 		},
 	}
@@ -569,10 +569,10 @@ func TestStringTruncation(t *testing.T) {
 
 func TestStringTruncationEdgeCases(t *testing.T) {
 	tests := []struct {
-		name      string
-		maxLen    int
-		input     string
-		expected  string
+		name     string
+		maxLen   int
+		input    string
+		expected string
 	}{
 		{
 			name:     "very small limit - fallback",
@@ -642,5 +642,91 @@ func TestWithMaxStringLength(t *testing.T) {
 	}
 	if result.ColorMode != ColorNever {
 		t.Errorf("Chained WithMaxStringLength(10).WithColorMode(ColorNever).ColorMode = %v, want ColorNever", result.ColorMode)
+	}
+}
+
+func TestStructNameOmissionInMaps(t *testing.T) {
+	// Define test structs
+	type Person struct {
+		Name string
+		Age  int
+	}
+
+	type Address struct {
+		Street string
+		City   string
+	}
+
+	tests := []struct {
+		name     string
+		input    interface{}
+		expected string
+	}{
+		{
+			name: "map with string key matching struct name",
+			input: map[string]Person{
+				"Person": {Name: "John", Age: 30},
+			},
+			expected: `{Person: {Name: "John", Age: 30}}`,
+		},
+		{
+			name: "map with string key not matching struct name",
+			input: map[string]Person{
+				"user": {Name: "John", Age: 30},
+			},
+			expected: `{user: Person{Name: "John", Age: 30}}`,
+		},
+		{
+			name: "map with multiple entries, some matching struct names",
+			input: map[string]interface{}{
+				"Person":  Person{Name: "John", Age: 30},
+				"Address": Address{Street: "123 Main St", City: "Anytown"},
+				"other":   Person{Name: "Jane", Age: 25},
+			},
+			expected: `{Address: {Street: "123 Main St", City: "Anytown"}, Person: {Name: "John", Age: 30}, other: Person{Name: "Jane", Age: 25}}`,
+		},
+		{
+			name: "map with non-string keys should not affect struct names",
+			input: map[int]Person{
+				1: {Name: "John", Age: 30},
+			},
+			expected: `{1: Person{Name: "John", Age: 30}}`,
+		},
+		{
+			name: "map with non-struct values should not be affected",
+			input: map[string]string{
+				"Person": "not a struct",
+			},
+			expected: `{Person: "not a struct"}`,
+		},
+		{
+			name: "struct field name matches struct type name",
+			input: struct {
+				Person struct {
+					Name string
+					Age  int
+				}
+				Other string
+			}{
+				Person: struct {
+					Name string
+					Age  int
+				}{Name: "John", Age: 30},
+				Other: "test",
+			},
+			expected: `{Person: {Name: "John", Age: 30}, Other: "test"}`,
+		},
+	}
+
+	// Use ColorNever to avoid color codes in test comparisons
+	printer := New().WithColorMode(ColorNever).WithMaxWidth(200)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := printer.Print(tt.input)
+			if result != tt.expected {
+				t.Errorf("Print() = %q, want %q", result, tt.expected)
+			}
+		})
 	}
 }

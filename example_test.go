@@ -32,11 +32,7 @@ func ExamplePrint_collections() {
 	// Slice:
 	// ["apple", "banana", "cherry"]
 	// Map:
-	// {
-	//   "one": 1,
-	//   "three": 3,
-	//   "two": 2
-	// }
+	// {one: 1, three: 3, two: 2}
 }
 
 func ExamplePrint_struct() {
@@ -93,7 +89,7 @@ func ExamplePrint_nested() {
 	// Person{
 	//   Name: "Alice",
 	//   Age: 28,
-	//   Address: Address{
+	//   Address: {
 	//     Street: "123 Main St",
 	//     City: "Anytown",
 	//     State: "CA"

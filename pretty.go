@@ -22,6 +22,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // ColorMode controls when colors are used
@@ -36,16 +38,18 @@ const (
 	ColorNever
 )
 
-// ANSI color codes
-const (
-	colorReset   = "\033[0m"
-	colorRed     = "\033[31m"
-	colorGreen   = "\033[32m"
-	colorYellow  = "\033[33m"
-	colorBlue    = "\033[34m"
-	colorMagenta = "\033[35m"
-	colorCyan    = "\033[36m"
-	colorGray    = "\033[90m"
+// Semantic styles using lipgloss
+var (
+	styleDefault     = lipgloss.NewStyle()
+	styleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red - for errors/invalid
+	styleString      = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green - for strings
+	styleBoolean     = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow - for booleans
+	styleNumber      = lipgloss.NewStyle().Foreground(lipgloss.Color("4")) // blue - for integers
+	styleSpecialType = lipgloss.NewStyle().Foreground(lipgloss.Color("5")) // magenta - for special types
+	styleFloat       = lipgloss.NewStyle().Foreground(lipgloss.Color("6")) // cyan - for floats
+	styleNull        = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // gray - for nil/null
+	styleComment     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // gray - for comments/metadata
+	styleField       = lipgloss.NewStyle()                                 // no styling - for field names
 )
 
 // Printer configures and performs pretty printing
@@ -60,22 +64,47 @@ type Printer struct {
 	// MaxStringLength is the maximum length for individual strings before truncation
 	// If 0, no truncation is applied (default behavior)
 	MaxStringLength int
+	// styles holds the lipgloss styles for different semantic purposes
+	styles struct {
+		error       lipgloss.Style // for errors and invalid values
+		string      lipgloss.Style // for string values
+		boolean     lipgloss.Style // for boolean values
+		number      lipgloss.Style // for integer numbers
+		float       lipgloss.Style // for floating-point numbers
+		specialType lipgloss.Style // for special types like io.ReadCloser
+		null        lipgloss.Style // for nil/null values
+		comment     lipgloss.Style // for comments and metadata
+		field       lipgloss.Style // for field names (struct fields and string map keys)
+	}
 }
 
 // New creates a new Printer with default options
 func New() *Printer {
-	return &Printer{
+	p := &Printer{
 		MaxWidth:        30,
 		ColorMode:       ColorAuto,
 		MaxSliceLength:  0, // Show all elements by default
 		MaxStringLength: 0, // No string truncation by default
 	}
+
+	// Initialize semantic lipgloss styles
+	p.styles.error = styleError
+	p.styles.string = styleString
+	p.styles.boolean = styleBoolean
+	p.styles.number = styleNumber
+	p.styles.float = styleFloat
+	p.styles.specialType = styleSpecialType
+	p.styles.null = styleNull
+	p.styles.comment = styleComment
+	p.styles.field = styleField
+
+	return p
 }
 
 // Print formats any input value into a pretty-printed string representation
 func (p *Printer) Print(v interface{}) string {
 	if v == nil {
-		return p.colorize("nil", colorGray)
+		return p.colorize("nil", p.styles.null)
 	}
 
 	val := reflect.ValueOf(v)
@@ -84,42 +113,50 @@ func (p *Printer) Print(v interface{}) string {
 
 // WithMaxWidth creates a new Printer with the specified maximum width
 func (p *Printer) WithMaxWidth(width int) *Printer {
-	return &Printer{
+	newP := &Printer{
 		MaxWidth:        width,
 		ColorMode:       p.ColorMode,
 		MaxSliceLength:  p.MaxSliceLength,
 		MaxStringLength: p.MaxStringLength,
 	}
+	newP.styles = p.styles
+	return newP
 }
 
 // WithColorMode creates a new Printer with the specified color mode
 func (p *Printer) WithColorMode(mode ColorMode) *Printer {
-	return &Printer{
+	newP := &Printer{
 		MaxWidth:        p.MaxWidth,
 		ColorMode:       mode,
 		MaxSliceLength:  p.MaxSliceLength,
 		MaxStringLength: p.MaxStringLength,
 	}
+	newP.styles = p.styles
+	return newP
 }
 
 // WithMaxSliceLength creates a new Printer with the specified maximum slice length
 func (p *Printer) WithMaxSliceLength(maxLen int) *Printer {
-	return &Printer{
+	newP := &Printer{
 		MaxWidth:        p.MaxWidth,
 		ColorMode:       p.ColorMode,
 		MaxSliceLength:  maxLen,
 		MaxStringLength: p.MaxStringLength,
 	}
+	newP.styles = p.styles
+	return newP
 }
 
 // WithMaxStringLength creates a new Printer with the specified maximum string length
 func (p *Printer) WithMaxStringLength(maxLen int) *Printer {
-	return &Printer{
+	newP := &Printer{
 		MaxWidth:        p.MaxWidth,
 		ColorMode:       p.ColorMode,
 		MaxSliceLength:  p.MaxSliceLength,
 		MaxStringLength: maxLen,
 	}
+	newP.styles = p.styles
+	return newP
 }
 
 // shouldUseColors determines if colors should be used based on the color mode
@@ -145,12 +182,12 @@ func isTerminal(f *os.File) bool {
 	return (fileInfo.Mode() & os.ModeCharDevice) != 0
 }
 
-// colorize wraps text with ANSI color codes if colors are enabled
-func (p *Printer) colorize(text, color string) string {
+// colorize applies lipgloss styling to text if colors are enabled
+func (p *Printer) colorize(text string, style lipgloss.Style) string {
 	if !p.shouldUseColors() {
 		return text
 	}
-	return color + text + colorReset
+	return style.Render(text)
 }
 
 // Print formats any input value into a pretty-printed string representation using default options
@@ -161,13 +198,13 @@ func Print(v interface{}) string {
 // formatValue recursively formats a reflect.Value with proper indentation
 func (p *Printer) formatValue(val reflect.Value, indent int) string {
 	if !val.IsValid() {
-		return p.colorize("invalid", colorRed)
+		return p.colorize("invalid", p.styles.error)
 	}
 
 	// Check if the value implements io.ReadCloser
 	if val.IsValid() && val.CanInterface() {
 		if _, ok := val.Interface().(io.ReadCloser); ok {
-			return p.colorize("<io.ReadCloser>", colorMagenta)
+			return p.colorize("<io.ReadCloser>", p.styles.specialType)
 		}
 	}
 
@@ -182,29 +219,29 @@ func (p *Printer) formatValue(val reflect.Value, indent int) string {
 		}
 		// Apply string truncation if needed
 		truncatedStr := p.truncateString(str)
-		return p.colorize(fmt.Sprintf(`"%s"`, truncatedStr), colorGreen)
+		return p.colorize(fmt.Sprintf(`"%s"`, truncatedStr), p.styles.string)
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return p.colorize(fmt.Sprintf("%d", val.Int()), colorBlue)
+		return p.colorize(fmt.Sprintf("%d", val.Int()), p.styles.number)
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return p.colorize(fmt.Sprintf("%d", val.Uint()), colorBlue)
+		return p.colorize(fmt.Sprintf("%d", val.Uint()), p.styles.number)
 
 	case reflect.Float32, reflect.Float64:
-		return p.colorize(fmt.Sprintf("%g", val.Float()), colorCyan)
+		return p.colorize(fmt.Sprintf("%g", val.Float()), p.styles.float)
 
 	case reflect.Bool:
-		return p.colorize(fmt.Sprintf("%t", val.Bool()), colorYellow)
+		return p.colorize(fmt.Sprintf("%t", val.Bool()), p.styles.boolean)
 
 	case reflect.Ptr:
 		if val.IsNil() {
-			return p.colorize("nil", colorGray)
+			return p.colorize("nil", p.styles.null)
 		}
 		return p.formatValue(val.Elem(), indent)
 
 	case reflect.Interface:
 		if val.IsNil() {
-			return p.colorize("nil", colorGray)
+			return p.colorize("nil", p.styles.null)
 		}
 		return p.formatValue(val.Elem(), indent)
 
@@ -290,7 +327,7 @@ func (p *Printer) formatTruncatedSlice(val reflect.Value, indent int, totalLengt
 	omittedCount := totalLength - (2 * showCount)
 	if omittedCount > 0 {
 		truncMsg := fmt.Sprintf("... %d more elements ...", omittedCount)
-		parts = append(parts, indentStr+p.colorize(truncMsg, colorGray))
+		parts = append(parts, indentStr+p.colorize(truncMsg, p.styles.comment))
 	}
 
 	// Show last elements
@@ -305,7 +342,7 @@ func (p *Printer) formatTruncatedSlice(val reflect.Value, indent int, totalLengt
 
 	// Add summary comment
 	summary := fmt.Sprintf("// Total length: %d", totalLength)
-	parts = append(parts, indentStr+p.colorize(summary, colorGray))
+	parts = append(parts, indentStr+p.colorize(summary, p.styles.comment))
 
 	return fmt.Sprintf("[\n%s\n%s]", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
 }
@@ -323,8 +360,33 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 	// Try single line format first
 	var singleLineParts []string
 	for _, key := range keys {
-		keyStr := p.formatValue(key, 0)
-		valueStr := p.formatValue(val.MapIndex(key), 0) // Use 0 indent for single line
+		keyStr := p.formatMapKey(key)
+		mapValue := val.MapIndex(key)
+
+		// Check if we should omit struct name when key matches struct type
+		var valueStr string
+		if key.Kind() == reflect.String {
+			// Handle both direct structs and interface-wrapped structs
+			actualValue := mapValue
+			if mapValue.Kind() == reflect.Interface && !mapValue.IsNil() {
+				actualValue = mapValue.Elem()
+			}
+
+			if actualValue.Kind() == reflect.Struct {
+				structTypeName := actualValue.Type().Name()
+				if key.String() == structTypeName {
+					// Key matches struct name, format struct without type name
+					valueStr = p.formatStructWithName(actualValue, 0, false)
+				} else {
+					valueStr = p.formatValue(mapValue, 0)
+				}
+			} else {
+				valueStr = p.formatValue(mapValue, 0) // Use 0 indent for single line
+			}
+		} else {
+			valueStr = p.formatValue(mapValue, 0) // Use 0 indent for single line
+		}
+
 		singleLineParts = append(singleLineParts, fmt.Sprintf("%s: %s", keyStr, valueStr))
 	}
 
@@ -341,19 +403,68 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 	indentStr := strings.Repeat("  ", nextIndent)
 
 	for _, key := range keys {
-		keyStr := p.formatValue(key, 0)
-		valueStr := p.formatValue(val.MapIndex(key), nextIndent)
+		keyStr := p.formatMapKey(key)
+		mapValue := val.MapIndex(key)
+
+		// Check if we should omit struct name when key matches struct type
+		var valueStr string
+		if key.Kind() == reflect.String {
+			// Handle both direct structs and interface-wrapped structs
+			actualValue := mapValue
+			if mapValue.Kind() == reflect.Interface && !mapValue.IsNil() {
+				actualValue = mapValue.Elem()
+			}
+
+			if actualValue.Kind() == reflect.Struct {
+				structTypeName := actualValue.Type().Name()
+				if key.String() == structTypeName {
+					// Key matches struct name, format struct without type name
+					valueStr = p.formatStructWithName(actualValue, nextIndent, false)
+				} else {
+					valueStr = p.formatValue(mapValue, nextIndent)
+				}
+			} else {
+				valueStr = p.formatValue(mapValue, nextIndent)
+			}
+		} else {
+			valueStr = p.formatValue(mapValue, nextIndent)
+		}
+
 		parts = append(parts, fmt.Sprintf("%s%s: %s", indentStr, keyStr, valueStr))
 	}
 
 	return fmt.Sprintf("{\n%s\n%s}", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
 }
 
+// formatMapKey formats a map key, treating string keys like struct field names
+func (p *Printer) formatMapKey(key reflect.Value) string {
+	// If the key is a string, format it like a struct field (no quotes, no coloring)
+	if key.Kind() == reflect.String {
+		str := key.String()
+		// Apply string truncation if needed, but no quotes or styling
+		truncatedStr := p.truncateString(str)
+		return p.colorize(truncatedStr, p.styles.field)
+	} else if key.Kind() == reflect.Struct {
+		return p.formatStructWithName(key, 0, false)
+	}
+
+	// For non-string keys, use the regular formatting
+	return p.formatValue(key, 0)
+}
+
 // formatStruct formats structs
 func (p *Printer) formatStruct(val reflect.Value, indent int) string {
+	return p.formatStructWithName(val, indent, true)
+}
+
+// formatStructWithName formats structs with optional struct name
+func (p *Printer) formatStructWithName(val reflect.Value, indent int, includeTypeName bool) string {
 	typ := val.Type()
 	if val.NumField() == 0 {
-		return fmt.Sprintf("%s{}", typ.Name())
+		if includeTypeName {
+			return fmt.Sprintf("%s{}", typ.Name())
+		}
+		return "{}"
 	}
 
 	// Collect exported fields first
@@ -367,18 +478,34 @@ func (p *Printer) formatStruct(val reflect.Value, indent int) string {
 		}
 
 		fieldVal := val.Field(i)
-		fieldStr := p.formatValue(fieldVal, 0) // Use 0 indent for single line
+
+		// Check if field name matches struct type name and omit struct name if so
+		var fieldStr string
+		if fieldVal.Kind() == reflect.Struct && field.Name == fieldVal.Type().Name() {
+			fieldStr = p.formatStructWithName(fieldVal, 0, false) // Omit struct name
+		} else {
+			fieldStr = p.formatValue(fieldVal, 0) // Use 0 indent for single line
+		}
+
 		fieldPart := fmt.Sprintf("%s: %s", field.Name, fieldStr)
 		exportedFields = append(exportedFields, fieldPart)
 		singleLineParts = append(singleLineParts, fieldPart)
 	}
 
 	if len(exportedFields) == 0 {
-		return fmt.Sprintf("%s{}", typ.Name())
+		if includeTypeName {
+			return fmt.Sprintf("%s{}", typ.Name())
+		}
+		return "{}"
 	}
 
 	// Try single line format first
-	singleLine := fmt.Sprintf("%s{%s}", typ.Name(), strings.Join(singleLineParts, ", "))
+	var singleLine string
+	if includeTypeName {
+		singleLine = fmt.Sprintf("%s{%s}", typ.Name(), strings.Join(singleLineParts, ", "))
+	} else {
+		singleLine = fmt.Sprintf("{%s}", strings.Join(singleLineParts, ", "))
+	}
 
 	// Use single line if it's within the max width
 	if len(singleLine) <= p.MaxWidth {
@@ -397,11 +524,23 @@ func (p *Printer) formatStruct(val reflect.Value, indent int) string {
 		}
 
 		fieldVal := val.Field(i)
-		fieldStr := p.formatValue(fieldVal, nextIndent)
+
+		// Check if field name matches struct type name and omit struct name if so
+		var fieldStr string
+		if fieldVal.Kind() == reflect.Struct && field.Name == fieldVal.Type().Name() {
+			fieldStr = p.formatStructWithName(fieldVal, nextIndent, false) // Omit struct name
+		} else {
+			fieldStr = p.formatValue(fieldVal, nextIndent)
+		}
+
 		parts = append(parts, fmt.Sprintf("%s%s: %s", indentStr, field.Name, fieldStr))
 	}
 
-	return fmt.Sprintf("%s{\n%s\n%s}", typ.Name(), strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
+	if includeTypeName {
+		return fmt.Sprintf("%s{\n%s\n%s}", typ.Name(), strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
+	} else {
+		return fmt.Sprintf("{\n%s\n%s}", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
+	}
 }
 
 func (p *Printer) formatChan(val reflect.Value) string {
@@ -497,7 +636,7 @@ func (p *Printer) truncateString(str string) string {
 	rightLen := contentLen - leftLen
 
 	// Handle edge case where string is shorter than expected after calculation
-	if leftLen + rightLen >= len(str) {
+	if leftLen+rightLen >= len(str) {
 		return str
 	}
 
