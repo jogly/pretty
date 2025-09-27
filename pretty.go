@@ -111,51 +111,37 @@ func (p *Printer) Print(v interface{}) string {
 	return p.formatValue(val, 0)
 }
 
+// copyPrinter creates a copy of the printer with optional field overrides
+func (p *Printer) copyPrinter() *Printer {
+	newP := *p // Shallow copy
+	return &newP
+}
+
 // WithMaxWidth creates a new Printer with the specified maximum width
 func (p *Printer) WithMaxWidth(width int) *Printer {
-	newP := &Printer{
-		MaxWidth:        width,
-		ColorMode:       p.ColorMode,
-		MaxSliceLength:  p.MaxSliceLength,
-		MaxStringLength: p.MaxStringLength,
-	}
-	newP.styles = p.styles
+	newP := p.copyPrinter()
+	newP.MaxWidth = width
 	return newP
 }
 
 // WithColorMode creates a new Printer with the specified color mode
 func (p *Printer) WithColorMode(mode ColorMode) *Printer {
-	newP := &Printer{
-		MaxWidth:        p.MaxWidth,
-		ColorMode:       mode,
-		MaxSliceLength:  p.MaxSliceLength,
-		MaxStringLength: p.MaxStringLength,
-	}
-	newP.styles = p.styles
+	newP := p.copyPrinter()
+	newP.ColorMode = mode
 	return newP
 }
 
 // WithMaxSliceLength creates a new Printer with the specified maximum slice length
 func (p *Printer) WithMaxSliceLength(maxLen int) *Printer {
-	newP := &Printer{
-		MaxWidth:        p.MaxWidth,
-		ColorMode:       p.ColorMode,
-		MaxSliceLength:  maxLen,
-		MaxStringLength: p.MaxStringLength,
-	}
-	newP.styles = p.styles
+	newP := p.copyPrinter()
+	newP.MaxSliceLength = maxLen
 	return newP
 }
 
 // WithMaxStringLength creates a new Printer with the specified maximum string length
 func (p *Printer) WithMaxStringLength(maxLen int) *Printer {
-	newP := &Printer{
-		MaxWidth:        p.MaxWidth,
-		ColorMode:       p.ColorMode,
-		MaxSliceLength:  p.MaxSliceLength,
-		MaxStringLength: maxLen,
-	}
-	newP.styles = p.styles
+	newP := p.copyPrinter()
+	newP.MaxStringLength = maxLen
 	return newP
 }
 
@@ -188,6 +174,132 @@ func (p *Printer) colorize(text string, style lipgloss.Style) string {
 		return text
 	}
 	return style.Render(text)
+}
+
+// compoundFormatter handles single-line vs multi-line formatting for compound types
+type compoundFormatter struct {
+	p             *Printer
+	openBrace     string
+	closeBrace    string
+	typeName      string
+	singleItems   []string
+	multiItems    []string
+	indent        int
+	currentWidth  int  // Running tally of visible width
+	exceedsWidth  bool // Early escape flag when width is exceeded
+}
+
+// newCompoundFormatter creates a new compound formatter
+func (p *Printer) newCompoundFormatter(openBrace, closeBrace, typeName string, indent int) *compoundFormatter {
+	cf := &compoundFormatter{
+		p:          p,
+		openBrace:  openBrace,
+		closeBrace: closeBrace,
+		typeName:   typeName,
+		indent:     indent,
+	}
+
+	// Initialize width with opening elements
+	cf.currentWidth = lipgloss.Width(typeName + openBrace)
+
+	return cf
+}
+
+// addItem adds an item to both single and multi-line formats
+func (cf *compoundFormatter) addItem(singleItem, multiItem string) {
+	// Early escape optimization: if we already exceed width, skip single-line processing
+	if !cf.exceedsWidth {
+		itemWidth := lipgloss.Width(singleItem)
+
+		// Add separator width (", ") for non-first items
+		if len(cf.singleItems) > 0 {
+			itemWidth += 2
+		}
+
+		cf.currentWidth += itemWidth
+
+		// Check if adding this item would exceed the width limit
+		closingWidth := lipgloss.Width(cf.closeBrace)
+		if cf.currentWidth+closingWidth > cf.p.MaxWidth {
+			cf.exceedsWidth = true
+		} else {
+			cf.singleItems = append(cf.singleItems, singleItem)
+		}
+	}
+
+	// Always add to multi-line items for fallback
+	cf.multiItems = append(cf.multiItems, multiItem)
+}
+
+// format returns the final formatted string, choosing single or multi-line based on width
+func (cf *compoundFormatter) format() string {
+	if len(cf.multiItems) == 0 {
+		if cf.typeName != "" {
+			return cf.typeName + cf.openBrace + cf.closeBrace
+		}
+		return cf.openBrace + cf.closeBrace
+	}
+
+	// If we exceeded width during processing or don't have all items in single format, use multi-line
+	if cf.exceedsWidth || len(cf.singleItems) != len(cf.multiItems) {
+		return cf.formatMultiLine()
+	}
+
+	// Build single line using pre-calculated width knowledge
+	var sb strings.Builder
+	if cf.typeName != "" {
+		sb.WriteString(cf.typeName)
+	}
+	sb.WriteString(cf.openBrace)
+	for i, item := range cf.singleItems {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString(item)
+	}
+	sb.WriteString(cf.closeBrace)
+
+	return sb.String()
+}
+
+// formatMultiLine formats the compound structure in multi-line format
+func (cf *compoundFormatter) formatMultiLine() string {
+	var sb strings.Builder
+	if cf.typeName != "" {
+		sb.WriteString(cf.typeName)
+	}
+	sb.WriteString(cf.openBrace)
+	sb.WriteByte('\n')
+
+	indentStr := strings.Repeat("  ", cf.indent+1)
+	for i, item := range cf.multiItems {
+		if i > 0 {
+			sb.WriteString(",\n")
+		}
+		sb.WriteString(indentStr)
+		sb.WriteString(item)
+	}
+
+	sb.WriteByte('\n')
+	sb.WriteString(strings.Repeat("  ", cf.indent))
+	sb.WriteString(cf.closeBrace)
+
+	return sb.String()
+}
+
+// shouldOmitStructName checks if struct name should be omitted based on key/field name matching
+func (p *Printer) shouldOmitStructName(keyOrFieldName string, val reflect.Value) bool {
+	// Handle interface-wrapped structs
+	actualValue := val
+	if val.Kind() == reflect.Interface && !val.IsNil() {
+		actualValue = val.Elem()
+	}
+
+	if actualValue.Kind() == reflect.Struct {
+		structTypeName := actualValue.Type().Name()
+		return keyOrFieldName == structTypeName
+	}
+	return false
 }
 
 // Print formats any input value into a pretty-printed string representation using default options
@@ -278,31 +390,16 @@ func (p *Printer) formatSlice(val reflect.Value, indent int) string {
 		return p.formatTruncatedSlice(val, indent, length)
 	}
 
-	// Try single line format first
-	var singleLineParts []string
-	for i := 0; i < val.Len(); i++ {
-		elem := p.formatValue(val.Index(i), 0) // Use 0 indent for single line
-		singleLineParts = append(singleLineParts, elem)
-	}
-
-	singleLine := fmt.Sprintf("[%s]", strings.Join(singleLineParts, ", "))
-
-	// Use single line if it's within the max width
-	if len(singleLine) <= p.MaxWidth {
-		return singleLine
-	}
-
-	// Fall back to multi-line format
-	var parts []string
-	nextIndent := indent + 1
-	indentStr := strings.Repeat("  ", nextIndent)
+	// Use the compound formatter for consistent single/multi-line logic
+	formatter := p.newCompoundFormatter("[", "]", "", indent)
 
 	for i := 0; i < val.Len(); i++ {
-		elem := p.formatValue(val.Index(i), nextIndent)
-		parts = append(parts, indentStr+elem)
+		singleItem := p.formatValue(val.Index(i), 0)      // Single line with 0 indent
+		multiItem := p.formatValue(val.Index(i), indent+1) // Multi line with proper indent
+		formatter.addItem(singleItem, multiItem)
 	}
 
-	return fmt.Sprintf("[\n%s\n%s]", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
+	return formatter.format()
 }
 
 // formatTruncatedSlice formats a long slice by showing first few, last few, and a summary
@@ -357,83 +454,34 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 	keys := val.MapKeys()
 	p.sortMapKeys(keys)
 
-	// Try single line format first
-	var singleLineParts []string
-	for _, key := range keys {
-		keyStr := p.formatMapKey(key)
-		mapValue := val.MapIndex(key)
-
-		// Check if we should omit struct name when key matches struct type
-		var valueStr string
-		if key.Kind() == reflect.String {
-			// Handle both direct structs and interface-wrapped structs
-			actualValue := mapValue
-			if mapValue.Kind() == reflect.Interface && !mapValue.IsNil() {
-				actualValue = mapValue.Elem()
-			}
-
-			if actualValue.Kind() == reflect.Struct {
-				structTypeName := actualValue.Type().Name()
-				if key.String() == structTypeName {
-					// Key matches struct name, format struct without type name
-					valueStr = p.formatStructWithName(actualValue, 0, false)
-				} else {
-					valueStr = p.formatValue(mapValue, 0)
-				}
-			} else {
-				valueStr = p.formatValue(mapValue, 0) // Use 0 indent for single line
-			}
-		} else {
-			valueStr = p.formatValue(mapValue, 0) // Use 0 indent for single line
-		}
-
-		singleLineParts = append(singleLineParts, fmt.Sprintf("%s: %s", keyStr, valueStr))
-	}
-
-	singleLine := fmt.Sprintf("{%s}", strings.Join(singleLineParts, ", "))
-
-	// Use single line if it's within the max width
-	if len(singleLine) <= p.MaxWidth {
-		return singleLine
-	}
-
-	// Fall back to multi-line format
-	var parts []string
-	nextIndent := indent + 1
-	indentStr := strings.Repeat("  ", nextIndent)
+	// Use the compound formatter for consistent single/multi-line logic
+	formatter := p.newCompoundFormatter("{", "}", "", indent)
 
 	for _, key := range keys {
 		keyStr := p.formatMapKey(key)
 		mapValue := val.MapIndex(key)
 
 		// Check if we should omit struct name when key matches struct type
-		var valueStr string
-		if key.Kind() == reflect.String {
-			// Handle both direct structs and interface-wrapped structs
+		var singleValueStr, multiValueStr string
+		if key.Kind() == reflect.String && p.shouldOmitStructName(key.String(), mapValue) {
+			// Key matches struct name, format struct without type name
 			actualValue := mapValue
 			if mapValue.Kind() == reflect.Interface && !mapValue.IsNil() {
 				actualValue = mapValue.Elem()
 			}
-
-			if actualValue.Kind() == reflect.Struct {
-				structTypeName := actualValue.Type().Name()
-				if key.String() == structTypeName {
-					// Key matches struct name, format struct without type name
-					valueStr = p.formatStructWithName(actualValue, nextIndent, false)
-				} else {
-					valueStr = p.formatValue(mapValue, nextIndent)
-				}
-			} else {
-				valueStr = p.formatValue(mapValue, nextIndent)
-			}
+			singleValueStr = p.formatStructWithName(actualValue, 0, false)
+			multiValueStr = p.formatStructWithName(actualValue, indent+1, false)
 		} else {
-			valueStr = p.formatValue(mapValue, nextIndent)
+			singleValueStr = p.formatValue(mapValue, 0)
+			multiValueStr = p.formatValue(mapValue, indent+1)
 		}
 
-		parts = append(parts, fmt.Sprintf("%s%s: %s", indentStr, keyStr, valueStr))
+		singleItem := fmt.Sprintf("%s: %s", keyStr, singleValueStr)
+		multiItem := fmt.Sprintf("%s: %s", keyStr, multiValueStr)
+		formatter.addItem(singleItem, multiItem)
 	}
 
-	return fmt.Sprintf("{\n%s\n%s}", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
+	return formatter.format()
 }
 
 // formatMapKey formats a map key, treating string keys like struct field names
@@ -467,10 +515,14 @@ func (p *Printer) formatStructWithName(val reflect.Value, indent int, includeTyp
 		return "{}"
 	}
 
-	// Collect exported fields first
-	var exportedFields []string
-	var singleLineParts []string
+	// Use compound formatter
+	typeName := ""
+	if includeTypeName {
+		typeName = typ.Name()
+	}
+	formatter := p.newCompoundFormatter("{", "}", typeName, indent)
 
+	// Process exported fields
 	for i := 0; i < val.NumField(); i++ {
 		field := typ.Field(i)
 		if !field.IsExported() {
@@ -480,67 +532,21 @@ func (p *Printer) formatStructWithName(val reflect.Value, indent int, includeTyp
 		fieldVal := val.Field(i)
 
 		// Check if field name matches struct type name and omit struct name if so
-		var fieldStr string
-		if fieldVal.Kind() == reflect.Struct && field.Name == fieldVal.Type().Name() {
-			fieldStr = p.formatStructWithName(fieldVal, 0, false) // Omit struct name
+		var singleFieldStr, multiFieldStr string
+		if p.shouldOmitStructName(field.Name, fieldVal) {
+			singleFieldStr = p.formatStructWithName(fieldVal, 0, false)
+			multiFieldStr = p.formatStructWithName(fieldVal, indent+1, false)
 		} else {
-			fieldStr = p.formatValue(fieldVal, 0) // Use 0 indent for single line
+			singleFieldStr = p.formatValue(fieldVal, 0)
+			multiFieldStr = p.formatValue(fieldVal, indent+1)
 		}
 
-		fieldPart := fmt.Sprintf("%s: %s", field.Name, fieldStr)
-		exportedFields = append(exportedFields, fieldPart)
-		singleLineParts = append(singleLineParts, fieldPart)
+		singleItem := fmt.Sprintf("%s: %s", field.Name, singleFieldStr)
+		multiItem := fmt.Sprintf("%s: %s", field.Name, multiFieldStr)
+		formatter.addItem(singleItem, multiItem)
 	}
 
-	if len(exportedFields) == 0 {
-		if includeTypeName {
-			return fmt.Sprintf("%s{}", typ.Name())
-		}
-		return "{}"
-	}
-
-	// Try single line format first
-	var singleLine string
-	if includeTypeName {
-		singleLine = fmt.Sprintf("%s{%s}", typ.Name(), strings.Join(singleLineParts, ", "))
-	} else {
-		singleLine = fmt.Sprintf("{%s}", strings.Join(singleLineParts, ", "))
-	}
-
-	// Use single line if it's within the max width
-	if len(singleLine) <= p.MaxWidth {
-		return singleLine
-	}
-
-	// Fall back to multi-line format
-	var parts []string
-	nextIndent := indent + 1
-	indentStr := strings.Repeat("  ", nextIndent)
-
-	for i := 0; i < val.NumField(); i++ {
-		field := typ.Field(i)
-		if !field.IsExported() {
-			continue
-		}
-
-		fieldVal := val.Field(i)
-
-		// Check if field name matches struct type name and omit struct name if so
-		var fieldStr string
-		if fieldVal.Kind() == reflect.Struct && field.Name == fieldVal.Type().Name() {
-			fieldStr = p.formatStructWithName(fieldVal, nextIndent, false) // Omit struct name
-		} else {
-			fieldStr = p.formatValue(fieldVal, nextIndent)
-		}
-
-		parts = append(parts, fmt.Sprintf("%s%s: %s", indentStr, field.Name, fieldStr))
-	}
-
-	if includeTypeName {
-		return fmt.Sprintf("%s{\n%s\n%s}", typ.Name(), strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
-	} else {
-		return fmt.Sprintf("{\n%s\n%s}", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
-	}
+	return formatter.format()
 }
 
 func (p *Printer) formatChan(val reflect.Value) string {
