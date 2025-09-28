@@ -15,13 +15,17 @@
 package pretty
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -38,18 +42,39 @@ const (
 	ColorNever
 )
 
+const (
+	defaultWidth = 100
+)
+
 // Semantic styles using lipgloss
 var (
-	styleDefault     = lipgloss.NewStyle()
-	styleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red - for errors/invalid
-	styleString      = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green - for strings
-	styleBoolean     = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow - for booleans
-	styleNumber      = lipgloss.NewStyle().Foreground(lipgloss.Color("4")) // blue - for integers
-	styleSpecialType = lipgloss.NewStyle().Foreground(lipgloss.Color("5")) // magenta - for special types
-	styleFloat       = lipgloss.NewStyle().Foreground(lipgloss.Color("6")) // cyan - for floats
-	styleNull        = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // gray - for nil/null
-	styleComment     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // gray - for comments/metadata
-	styleField       = lipgloss.NewStyle()                                 // no styling - for field names
+	styleError       = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))  // red - for errors/invalid
+	styleString      = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))  // green - for strings
+	styleBoolean     = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))  // yellow - for booleans
+	styleNumber      = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))  // blue - for integers
+	styleSpecialType = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))  // magenta - for special types
+	styleFloat       = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))  // cyan - for floats
+	styleNull        = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))  // gray - for nil/null
+	styleComment     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))  // gray - for comments/metadata
+	styleTime        = lipgloss.NewStyle().Foreground(lipgloss.Color("13")) // bright magenta - for times
+	stylePointer     = lipgloss.NewStyle().Foreground(lipgloss.Color("88"))
+	styleField       = lipgloss.NewStyle() // no styling - for field names
+
+	pointerGamut = []lipgloss.Style{
+		lipgloss.NewStyle().Foreground(lipgloss.Color("196")), // Red
+		lipgloss.NewStyle().Foreground(lipgloss.Color("208")), // Orange
+		lipgloss.NewStyle().Foreground(lipgloss.Color("226")), // Yellow
+		lipgloss.NewStyle().Foreground(lipgloss.Color("51")),  // Cyan
+		lipgloss.NewStyle().Foreground(lipgloss.Color("135")), // Purple
+		lipgloss.NewStyle().Foreground(lipgloss.Color("170")), // Pink
+		lipgloss.NewStyle().Foreground(lipgloss.Color("129")), // Blue
+		lipgloss.NewStyle().Foreground(lipgloss.Color("204")), // Teal
+		lipgloss.NewStyle().Foreground(lipgloss.Color("124")), // Green
+	}
+)
+
+var (
+	timeType = reflect.TypeOf(time.Time{})
 )
 
 // Printer configures and performs pretty printing
@@ -64,39 +89,46 @@ type Printer struct {
 	// MaxStringLength is the maximum length for individual strings before truncation
 	// If 0, no truncation is applied (default behavior)
 	MaxStringLength int
-	// styles holds the lipgloss styles for different semantic purposes
-	styles struct {
-		error       lipgloss.Style // for errors and invalid values
-		string      lipgloss.Style // for string values
-		boolean     lipgloss.Style // for boolean values
-		number      lipgloss.Style // for integer numbers
-		float       lipgloss.Style // for floating-point numbers
-		specialType lipgloss.Style // for special types like io.ReadCloser
-		null        lipgloss.Style // for nil/null values
-		comment     lipgloss.Style // for comments and metadata
-		field       lipgloss.Style // for field names (struct fields and string map keys)
+	// Styles holds the lipgloss Styles for different semantic purposes
+	Styles struct {
+		Error       lipgloss.Style // for errors and invalid values
+		String      lipgloss.Style // for string values
+		Boolean     lipgloss.Style // for boolean values
+		Number      lipgloss.Style // for integer numbers
+		Float       lipgloss.Style // for floating-point numbers
+		SpecialType lipgloss.Style // for special types like io.ReadCloser
+		Time        lipgloss.Style // for time values
+		Null        lipgloss.Style // for nil/null values
+		Comment     lipgloss.Style // for comments and metadata
+		Field       lipgloss.Style // for field names (struct fields and string map keys)
+		Pointer     lipgloss.Style // for pointers
 	}
+
+	visited map[uintptr]bool
+	cycled  map[uintptr]bool
 }
 
 // New creates a new Printer with default options
 func New() *Printer {
 	p := &Printer{
-		MaxWidth:        30,
+		MaxWidth:        defaultWidth,
 		ColorMode:       ColorAuto,
-		MaxSliceLength:  0, // Show all elements by default
+		MaxSliceLength:  20,
 		MaxStringLength: 0, // No string truncation by default
 	}
 
 	// Initialize semantic lipgloss styles
-	p.styles.error = styleError
-	p.styles.string = styleString
-	p.styles.boolean = styleBoolean
-	p.styles.number = styleNumber
-	p.styles.float = styleFloat
-	p.styles.specialType = styleSpecialType
-	p.styles.null = styleNull
-	p.styles.comment = styleComment
-	p.styles.field = styleField
+	p.Styles.Error = styleError
+	p.Styles.String = styleString
+	p.Styles.Boolean = styleBoolean
+	p.Styles.Number = styleNumber
+	p.Styles.Float = styleFloat
+	p.Styles.SpecialType = styleSpecialType
+	p.Styles.Time = styleTime
+	p.Styles.Null = styleNull
+	p.Styles.Comment = styleComment
+	p.Styles.Field = styleField
+	p.Styles.Pointer = stylePointer
 
 	return p
 }
@@ -104,10 +136,15 @@ func New() *Printer {
 // Print formats any input value into a pretty-printed string representation
 func (p *Printer) Print(v interface{}) string {
 	if v == nil {
-		return p.colorize("nil", p.styles.null)
+		return p.colorize("nil", p.Styles.Null)
 	}
 
 	val := reflect.ValueOf(v)
+
+	p.visited = make(map[uintptr]bool)
+	p.cycled = make(map[uintptr]bool)
+	defer clear(p.visited)
+
 	return p.formatValue(val, 0)
 }
 
@@ -178,29 +215,35 @@ func (p *Printer) colorize(text string, style lipgloss.Style) string {
 
 // compoundFormatter handles single-line vs multi-line formatting for compound types
 type compoundFormatter struct {
-	p             *Printer
-	openBrace     string
-	closeBrace    string
-	typeName      string
-	singleItems   []string
-	multiItems    []string
-	indent        int
-	currentWidth  int  // Running tally of visible width
-	exceedsWidth  bool // Early escape flag when width is exceeded
+	p            *Printer
+	openBrace    string
+	closeBrace   string
+	typeName     string
+	singleItems  []string
+	multiItems   []string
+	indent       int
+	currentWidth int  // Running tally of visible width
+	exceedsWidth bool // Early escape flag when width is exceeded
+	padBraces    bool // Whether to pad the braces with spaces in single-line format
 }
 
 // newCompoundFormatter creates a new compound formatter
-func (p *Printer) newCompoundFormatter(openBrace, closeBrace, typeName string, indent int) *compoundFormatter {
+func (p *Printer) newCompoundFormatter(openBrace, closeBrace, typeName string, indent int, padBraces bool) *compoundFormatter {
 	cf := &compoundFormatter{
 		p:          p,
 		openBrace:  openBrace,
 		closeBrace: closeBrace,
 		typeName:   typeName,
 		indent:     indent,
+		padBraces:  padBraces,
 	}
 
 	// Initialize width with opening elements
-	cf.currentWidth = lipgloss.Width(typeName + openBrace)
+	padded := 0
+	if padBraces {
+		padded = 1
+	}
+	cf.currentWidth = lipgloss.Width(typeName+openBrace) + padded
 
 	return cf
 }
@@ -251,11 +294,17 @@ func (cf *compoundFormatter) format() string {
 		sb.WriteString(cf.typeName)
 	}
 	sb.WriteString(cf.openBrace)
+	if cf.padBraces {
+		sb.WriteString(" ")
+	}
 	for i, item := range cf.singleItems {
 		if i > 0 {
 			sb.WriteString(", ")
 		}
 		sb.WriteString(item)
+	}
+	if cf.padBraces {
+		sb.WriteString(" ")
 	}
 	sb.WriteString(cf.closeBrace)
 
@@ -287,6 +336,11 @@ func (cf *compoundFormatter) formatMultiLine() string {
 	return sb.String()
 }
 
+// isSpecialHandledType checks if a value is a special type that should bypass struct formatting
+func (p *Printer) isSpecialHandledType(val reflect.Value) bool {
+	return val.Type() == timeType
+}
+
 // shouldOmitStructName checks if struct name should be omitted based on key/field name matching
 func (p *Printer) shouldOmitStructName(keyOrFieldName string, val reflect.Value) bool {
 	// Handle interface-wrapped structs
@@ -307,76 +361,192 @@ func Print(v interface{}) string {
 	return New().Print(v)
 }
 
+// formatCyclePointer formats a pointer value for cycle display using Base64 encoding
+func (p *Printer) formatCyclePointer(ptr uintptr) string {
+	// Hash the pointer to ensure visual distinction between similar pointers
+	hasher := fnv.New64a()
+	binary.Write(hasher, binary.LittleEndian, uint64(ptr))
+	hashedPtr := hasher.Sum64()
+
+	// Convert hashed pointer to byte slice for Base64 encoding
+	ptrBytes := make([]byte, 8)
+	for i := 0; i < 8; i++ {
+		ptrBytes[i] = byte(hashedPtr >> (8 * i))
+	}
+
+	// Encode using standard Base64
+	encoded := base64.StdEncoding.EncodeToString(ptrBytes)
+	encoded = strings.TrimRight(encoded, "=")
+
+	// Use hash for color selection to maintain consistency
+	style := pointerGamut[hashedPtr%uint64(len(pointerGamut))]
+
+	// Format with dim style and parentheses
+	return p.colorize("#", p.Styles.Comment) + p.colorize(encoded, style)
+}
+
+// appendCyclePointerIfNeeded checks if a value is cycled and appends pointer display
+func (p *Printer) appendCyclePointerIfNeeded(formatted string, val reflect.Value) string {
+	if !p.canFormCycles(val) {
+		return formatted
+	}
+
+	var ptr uintptr
+	switch val.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice:
+		if val.IsNil() {
+			return formatted
+		}
+		ptr = val.Pointer()
+	case reflect.Interface:
+		// For interfaces, don't append cycle pointers here.
+		// The underlying value will handle its own cycle detection and pointer annotation.
+		return formatted
+	case reflect.Struct:
+		// For structs, only track cycle if it's a pointer to a struct
+		// Non-pointer structs can't form cycles as they are copied by value
+	}
+
+	if ptr != 0 && p.cycled[ptr] {
+		return formatted + p.formatCyclePointer(ptr)
+	}
+
+	return formatted
+}
+
+func PrintWidth(v interface{}, width int) string {
+	return New().WithMaxWidth(width).Print(v)
+}
+
 // formatValue recursively formats a reflect.Value with proper indentation
 func (p *Printer) formatValue(val reflect.Value, indent int) string {
 	if !val.IsValid() {
-		return p.colorize("invalid", p.styles.error)
+		return p.colorize("invalid", p.Styles.Error)
+	}
+
+	var result string
+
+	// Check for cycles in pointer-like types that can form circular references
+	if p.canFormCycles(val) {
+		var ptr uintptr
+		switch val.Kind() {
+		case reflect.Ptr, reflect.Map, reflect.Slice:
+			if val.IsNil() {
+				// Nil values can't form cycles
+				break
+			}
+			ptr = val.Pointer()
+		case reflect.Struct:
+			// For structs, only track cycle if it's a pointer to a struct (since
+			// that's what can form cycles) Non-pointer structs can't form cycles as
+			// they are copied by value. We skip cycle detection for value structs.
+			//
+			// Note the fields of a value struct may contain pointers to other values
+			// that can form cycles, and those are still checked for cycles.
+		case reflect.Interface:
+			// For interfaces, don't do cycle detection here.
+			// Let the underlying value handle its own cycle detection
+			// when we recursively call formatValue on val.Elem().
+			break
+		}
+
+		if ptr != 0 {
+			if p.visited[ptr] {
+				// Mark this pointer as part of a cycle, but continue with normal formatting
+				p.cycled[ptr] = true
+				// Return a placeholder for cycled reference
+				return p.colorize("→", p.Styles.Comment) + p.formatCyclePointer(ptr)
+			}
+			// Mark this address as visited
+			p.visited[ptr] = true
+			// Make sure to clean up after processing this level otherwise we'll prune
+			// all further references to this value, despite it not being a cycle.
+			// We do NOT clean up the cycled map, because we want to track when a
+			// "node" is omitted, and then tag the non-omitted nodes with their ptr.
+			defer delete(p.visited, ptr)
+		}
 	}
 
 	// Check if the value implements io.ReadCloser
 	if val.IsValid() && val.CanInterface() {
 		if _, ok := val.Interface().(io.ReadCloser); ok {
-			return p.colorize("<io.ReadCloser>", p.styles.specialType)
+			result = p.colorize("<io.ReadCloser>", p.Styles.SpecialType)
+			return p.appendCyclePointerIfNeeded(result, val)
 		}
+	}
+
+	if val.Type() == timeType {
+		result = p.formatTime(val.Interface().(time.Time), indent)
+		return p.appendCyclePointerIfNeeded(result, val)
 	}
 
 	switch val.Kind() {
 	case reflect.String:
 		str := val.String()
 		// Check if string is valid JSON and pretty-print it
-		if p.isJSON(str) {
-			if prettyJSON := p.formatJSON(str, indent); prettyJSON != "" {
-				return prettyJSON
+		if js, ok := p.isJSON(str); ok {
+			if prettyJSON := p.formatJSON(js, indent); prettyJSON != "" {
+				result = prettyJSON
 			}
 		}
-		// Apply string truncation if needed
-		truncatedStr := p.truncateString(str)
-		return p.colorize(fmt.Sprintf(`"%s"`, truncatedStr), p.styles.string)
+
+		if result == "" {
+			// Apply string truncation if needed
+			truncatedStr := p.truncateString(str)
+			result = p.colorize(fmt.Sprintf(`"%s"`, truncatedStr), p.Styles.String)
+		}
 
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return p.colorize(fmt.Sprintf("%d", val.Int()), p.styles.number)
+		result = p.colorize(fmt.Sprintf("%d", val.Int()), p.Styles.Number)
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return p.colorize(fmt.Sprintf("%d", val.Uint()), p.styles.number)
+		result = p.colorize(fmt.Sprintf("%d", val.Uint()), p.Styles.Number)
 
 	case reflect.Float32, reflect.Float64:
-		return p.colorize(fmt.Sprintf("%g", val.Float()), p.styles.float)
+		result = p.colorize(fmt.Sprintf("%g", val.Float()), p.Styles.Float)
 
 	case reflect.Bool:
-		return p.colorize(fmt.Sprintf("%t", val.Bool()), p.styles.boolean)
+		result = p.colorize(fmt.Sprintf("%t", val.Bool()), p.Styles.Boolean)
 
 	case reflect.Ptr:
 		if val.IsNil() {
-			return p.colorize("nil", p.styles.null)
+			result = p.colorize("nil", p.Styles.Null)
+		} else {
+			result = p.formatValue(val.Elem(), indent)
 		}
-		return p.formatValue(val.Elem(), indent)
 
 	case reflect.Interface:
 		if val.IsNil() {
-			return p.colorize("nil", p.styles.null)
+			result = p.colorize("nil", p.Styles.Null)
+		} else {
+			result = p.formatValue(val.Elem(), indent)
 		}
-		return p.formatValue(val.Elem(), indent)
 
 	case reflect.Slice, reflect.Array:
-		return p.formatSlice(val, indent)
+		result = p.formatSlice(val, indent)
 
 	case reflect.Map:
-		return p.formatMap(val, indent)
+		result = p.formatMap(val, indent)
 
 	case reflect.Struct:
-		return p.formatStruct(val, indent)
+		result = p.formatStruct(val, indent, true)
+
 	case reflect.Chan:
-		return p.formatChan(val)
+		result = p.formatChan(val)
+
 	default:
 		// Fallback to JSON for complex types
 		if data, err := json.MarshalIndent(val.Interface(), strings.Repeat("  ", indent), "  "); err == nil {
-			return string(data)
+			result = string(data)
+		} else {
+			result = fmt.Sprintf("%+v", val.Interface())
 		}
-		return fmt.Sprintf("%+v", val.Interface())
 	}
+
+	return p.appendCyclePointerIfNeeded(result, val)
 }
 
-// formatSlice formats slices and arrays
+// formatSlice formats slices and arrays with cycle detection
 func (p *Printer) formatSlice(val reflect.Value, indent int) string {
 	if val.Len() == 0 {
 		return "[]"
@@ -391,10 +561,10 @@ func (p *Printer) formatSlice(val reflect.Value, indent int) string {
 	}
 
 	// Use the compound formatter for consistent single/multi-line logic
-	formatter := p.newCompoundFormatter("[", "]", "", indent)
+	formatter := p.newCompoundFormatter("[", "]", "", indent, false)
 
 	for i := 0; i < val.Len(); i++ {
-		singleItem := p.formatValue(val.Index(i), 0)      // Single line with 0 indent
+		singleItem := p.formatValue(val.Index(i), 0)       // Single line with 0 indent
 		multiItem := p.formatValue(val.Index(i), indent+1) // Multi line with proper indent
 		formatter.addItem(singleItem, multiItem)
 	}
@@ -424,7 +594,7 @@ func (p *Printer) formatTruncatedSlice(val reflect.Value, indent int, totalLengt
 	omittedCount := totalLength - (2 * showCount)
 	if omittedCount > 0 {
 		truncMsg := fmt.Sprintf("... %d more elements ...", omittedCount)
-		parts = append(parts, indentStr+p.colorize(truncMsg, p.styles.comment))
+		parts = append(parts, indentStr+p.colorize(truncMsg, p.Styles.Comment))
 	}
 
 	// Show last elements
@@ -438,13 +608,13 @@ func (p *Printer) formatTruncatedSlice(val reflect.Value, indent int, totalLengt
 	}
 
 	// Add summary comment
-	summary := fmt.Sprintf("// Total length: %d", totalLength)
-	parts = append(parts, indentStr+p.colorize(summary, p.styles.comment))
+	summary := fmt.Sprintf("// len() = %d", totalLength)
+	parts = append(parts, indentStr+p.colorize(summary, p.Styles.Comment))
 
 	return fmt.Sprintf("[\n%s\n%s]", strings.Join(parts, ",\n"), strings.Repeat("  ", indent))
 }
 
-// formatMap formats maps
+// formatMap formats maps with cycle detection
 func (p *Printer) formatMap(val reflect.Value, indent int) string {
 	if val.Len() == 0 {
 		return "{}"
@@ -455,7 +625,7 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 	p.sortMapKeys(keys)
 
 	// Use the compound formatter for consistent single/multi-line logic
-	formatter := p.newCompoundFormatter("{", "}", "", indent)
+	formatter := p.newCompoundFormatter("{", "}", "", indent, true)
 
 	for _, key := range keys {
 		keyStr := p.formatMapKey(key)
@@ -463,14 +633,22 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 
 		// Check if we should omit struct name when key matches struct type
 		var singleValueStr, multiValueStr string
-		if key.Kind() == reflect.String && p.shouldOmitStructName(key.String(), mapValue) {
+		if key.Kind() == reflect.String && !p.isSpecialHandledType(mapValue) {
 			// Key matches struct name, format struct without type name
 			actualValue := mapValue
 			if mapValue.Kind() == reflect.Interface && !mapValue.IsNil() {
 				actualValue = mapValue.Elem()
 			}
-			singleValueStr = p.formatStructWithName(actualValue, 0, false)
-			multiValueStr = p.formatStructWithName(actualValue, indent+1, false)
+			omitStructName := p.shouldOmitStructName(key.String(), mapValue)
+
+			// Only call formatStruct if the value is actually a struct
+			if omitStructName && actualValue.Kind() == reflect.Struct {
+				singleValueStr = p.formatStruct(actualValue, 0, !omitStructName)
+				multiValueStr = p.formatStruct(actualValue, indent+1, !omitStructName)
+			} else {
+				singleValueStr = p.formatValue(mapValue, 0)
+				multiValueStr = p.formatValue(mapValue, indent+1)
+			}
 		} else {
 			singleValueStr = p.formatValue(mapValue, 0)
 			multiValueStr = p.formatValue(mapValue, indent+1)
@@ -484,35 +662,31 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 	return formatter.format()
 }
 
-// formatMapKey formats a map key, treating string keys like struct field names
+// formatMapKey formats a map key with cycle detection, treating string keys like struct field names
 func (p *Printer) formatMapKey(key reflect.Value) string {
 	// If the key is a string, format it like a struct field (no quotes, no coloring)
 	if key.Kind() == reflect.String {
 		str := key.String()
 		// Apply string truncation if needed, but no quotes or styling
 		truncatedStr := p.truncateString(str)
-		return p.colorize(truncatedStr, p.styles.field)
+		return p.colorize(truncatedStr, p.Styles.Field)
 	} else if key.Kind() == reflect.Struct {
-		return p.formatStructWithName(key, 0, false)
+		return p.formatStruct(key, 0, false)
 	}
 
 	// For non-string keys, use the regular formatting
 	return p.formatValue(key, 0)
 }
 
-// formatStruct formats structs
-func (p *Printer) formatStruct(val reflect.Value, indent int) string {
-	return p.formatStructWithName(val, indent, true)
-}
-
-// formatStructWithName formats structs with optional struct name
-func (p *Printer) formatStructWithName(val reflect.Value, indent int, includeTypeName bool) string {
+// formatStruct formats structs with optional struct name and cycle detection
+func (p *Printer) formatStruct(val reflect.Value, indent int, includeTypeName bool) string {
 	typ := val.Type()
+	typName := ""
+	if includeTypeName {
+		typName = typ.Name()
+	}
 	if val.NumField() == 0 {
-		if includeTypeName {
-			return fmt.Sprintf("%s{}", typ.Name())
-		}
-		return "{}"
+		return fmt.Sprintf("%s{}", typName)
 	}
 
 	// Use compound formatter
@@ -520,7 +694,7 @@ func (p *Printer) formatStructWithName(val reflect.Value, indent int, includeTyp
 	if includeTypeName {
 		typeName = typ.Name()
 	}
-	formatter := p.newCompoundFormatter("{", "}", typeName, indent)
+	formatter := p.newCompoundFormatter("{", "}", typeName, indent, true)
 
 	// Process exported fields
 	for i := 0; i < val.NumField(); i++ {
@@ -533,9 +707,9 @@ func (p *Printer) formatStructWithName(val reflect.Value, indent int, includeTyp
 
 		// Check if field name matches struct type name and omit struct name if so
 		var singleFieldStr, multiFieldStr string
-		if p.shouldOmitStructName(field.Name, fieldVal) {
-			singleFieldStr = p.formatStructWithName(fieldVal, 0, false)
-			multiFieldStr = p.formatStructWithName(fieldVal, indent+1, false)
+		if !p.isSpecialHandledType(fieldVal) && p.shouldOmitStructName(field.Name, fieldVal) {
+			singleFieldStr = p.formatStruct(fieldVal, 0, false)
+			multiFieldStr = p.formatStruct(fieldVal, indent+1, false)
 		} else {
 			singleFieldStr = p.formatValue(fieldVal, 0)
 			multiFieldStr = p.formatValue(fieldVal, indent+1)
@@ -595,9 +769,9 @@ func (p *Printer) keyToString(key reflect.Value) string {
 }
 
 // isJSON checks if a string is valid JSON
-func (p *Printer) isJSON(str string) bool {
+func (p *Printer) isJSON(str string) (js json.RawMessage, ok bool) {
 	if len(str) < 2 {
-		return false
+		return nil, false
 	}
 
 	// Quick check for JSON-like structure
@@ -606,20 +780,22 @@ func (p *Printer) isJSON(str string) bool {
 		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
 
 		var js json.RawMessage
-		return json.Unmarshal([]byte(str), &js) == nil
+		return js, json.Unmarshal([]byte(str), &js) == nil
 	}
-	return false
+	return nil, false
 }
 
 // formatJSON formats a JSON string with proper indentation and colors
-func (p *Printer) formatJSON(jsonStr string, indent int) string {
-	var parsed interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+func (p *Printer) formatJSON(jsonStr json.RawMessage, indent int) string {
+	var parsed any
+	if err := json.Unmarshal(jsonStr, &parsed); err != nil {
 		return ""
 	}
 
 	// Use our own formatter to format the parsed JSON with colors
-	return p.formatValue(reflect.ValueOf(parsed), indent)
+	return fmt.Sprintf("%s %s",
+		p.colorize("JSON", p.Styles.SpecialType),
+		p.formatValue(reflect.ValueOf(parsed), indent))
 }
 
 // truncateString truncates a string with center ellipses if it exceeds MaxStringLength
@@ -647,4 +823,43 @@ func (p *Printer) truncateString(str string) string {
 	}
 
 	return str[:leftLen] + ellipses + str[len(str)-rightLen:]
+}
+
+// formatTime formats time.Time values using the relative time formatter
+func (p *Printer) formatTime(t time.Time, indent int) string {
+	// Use the Time function from time.go for humanized relative time
+	formatted := Time(t)
+	if t.IsZero() {
+		// Use special type style for <zero> like other special markers
+		return p.colorize(formatted, p.Styles.SpecialType)
+	}
+	if time.Until(t).Abs() > 30*time.Minute {
+		return fmt.Sprintf("%s %s", p.colorize(formatted, p.Styles.Time), p.colorize(t.Format(time.Kitchen), p.Styles.Comment))
+	}
+
+	return p.colorize(formatted, p.Styles.Time)
+}
+
+// canFormCycles returns true if the given value can potentially form cycles
+func (p *Printer) canFormCycles(val reflect.Value) bool {
+	switch val.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice:
+		return true
+	case reflect.Struct:
+		// Structs can form cycles if they contain pointers, slices, or maps
+		return true
+	case reflect.Interface:
+		// Interfaces can contain cycle-forming types
+		return true
+	default:
+		return false
+	}
+}
+
+// Checks if a value has been omitted due to a cycle.
+func (p *Printer) isCycled(val reflect.Value) bool {
+	if val.CanAddr() {
+		return p.cycled[uintptr(val.Addr().UnsafePointer())]
+	}
+	return false
 }

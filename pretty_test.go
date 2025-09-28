@@ -78,7 +78,7 @@ func TestPrint(t *testing.T) {
 		{
 			name:     "map with elements",
 			input:    map[string]int{"a": 1, "b": 2},
-			expected: "{a: 1, b: 2}",
+			expected: "{ a: 1, b: 2 }",
 		},
 		{
 			name:     "simple struct",
@@ -107,13 +107,13 @@ func TestPrint(t *testing.T) {
 		{
 			name:     "short struct single-line",
 			input:    Point{X: 10, Y: 20},
-			expected: "Point{X: 10, Y: 20}",
+			expected: "Point{ X: 10, Y: 20 }",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := Print(tt.input)
+			result := PrintWidth(tt.input, 30)
 			if result != tt.expected {
 				t.Errorf("Print() = %q, want %q", result, tt.expected)
 			}
@@ -169,7 +169,7 @@ func TestPrintChannels(t *testing.T) {
 	close(ch.Both)
 	close(ch.Send)
 
-	result := Print(ch)
+	result := PrintWidth(ch, 30)
 	expected := "ChannelStruct{\n  Both: chan int,\n  Send: chan<- int,\n  Recv: <-chan int\n}"
 	if result != expected {
 		t.Errorf("Print(channels) = %q, want %q", result, expected)
@@ -195,7 +195,7 @@ func TestPrintChannels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := Print(tt.input)
+			result := PrintWidth(tt.input, 30)
 			if result != tt.expected {
 				t.Errorf("Print(%s) = %q, want %q", tt.name, result, tt.expected)
 			}
@@ -203,15 +203,24 @@ func TestPrintChannels(t *testing.T) {
 	}
 }
 
-func TestPrintComplexTypes(t *testing.T) {
-	// Test time.Time which has unexported fields
+func TestTime(t *testing.T) {
+	// Test time.Time which gets formatted as relative time
 	now := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
 	result := Print(now)
 
-	// Should show as Time{} since it has unexported fields
-	expected := "Time{}"
-	if result != expected {
-		t.Errorf("Print(time.Time) = %q, want %q", result, expected)
+	// Should show as relative time (e.g., "2 years ago" or similar)
+	// We can't predict the exact output since it depends on current time,
+	// but it should not be empty and should not contain "Time{}"
+	if result == "" || strings.Contains(result, "Time{}") {
+		t.Errorf("Print(time.Time) = %q, expected relative time format", result)
+	}
+
+	// Test zero time specifically
+	zeroTime := time.Time{}
+	zeroResult := Print(zeroTime)
+	expected := "<zero>"
+	if zeroResult != expected {
+		t.Errorf("Print(zero time) = %q, want %q", zeroResult, expected)
 	}
 }
 
@@ -244,7 +253,7 @@ func TestPrinterWithCustomWidth(t *testing.T) {
 			name:     "map with wide width",
 			input:    map[string]int{"a": 1, "b": 2},
 			width:    50,
-			expected: "{a: 1, b: 2}",
+			expected: "{ a: 1, b: 2 }",
 		},
 		{
 			name:     "struct with narrow width",
@@ -256,7 +265,7 @@ func TestPrinterWithCustomWidth(t *testing.T) {
 			name:     "struct with wide width",
 			input:    Point{X: 10, Y: 20},
 			width:    50,
-			expected: "Point{X: 10, Y: 20}",
+			expected: "Point{ X: 10, Y: 20 }",
 		},
 	}
 
@@ -273,7 +282,7 @@ func TestPrinterWithCustomWidth(t *testing.T) {
 
 func TestNew(t *testing.T) {
 	printer := New()
-	if printer.MaxWidth != 30 {
+	if printer.MaxWidth != defaultWidth {
 		t.Errorf("New().MaxWidth = %d, want 30", printer.MaxWidth)
 	}
 }
@@ -305,7 +314,7 @@ func TestMapKeySorting(t *testing.T) {
 	// Use a wide printer to ensure single-line output
 	printer := &Printer{MaxWidth: 100}
 	result := printer.Print(m)
-	expected := "{alpha: 2, beta: 3, gamma: 4, zebra: 1}"
+	expected := "{ alpha: 2, beta: 3, gamma: 4, zebra: 1 }"
 	if result != expected {
 		t.Errorf("Map keys not sorted correctly: got %q, want %q", result, expected)
 	}
@@ -378,7 +387,7 @@ func TestReadCloserFormatting(t *testing.T) {
 }
 
 func TestJSONFormatting(t *testing.T) {
-	printer := New().WithColorMode(ColorNever)
+	printer := New().WithMaxWidth(30).WithColorMode(ColorNever)
 
 	tests := []struct {
 		name     string
@@ -388,17 +397,17 @@ func TestJSONFormatting(t *testing.T) {
 		{
 			name:     "simple JSON object",
 			input:    `{"name":"John","age":30}`,
-			expected: "{age: 30, name: \"John\"}",
+			expected: "JSON { age: 30, name: \"John\" }",
 		},
 		{
 			name:     "JSON array",
 			input:    `[1,2,3]`,
-			expected: "[1, 2, 3]",
+			expected: "JSON [1, 2, 3]",
 		},
 		{
 			name:     "nested JSON",
 			input:    `{"user":{"name":"Alice","active":true},"count":5}`,
-			expected: "{\n  count: 5,\n  user: {active: true, name: \"Alice\"}\n}",
+			expected: "JSON {\n  count: 5,\n  user: { active: true, name: \"Alice\" }\n}",
 		},
 		{
 			name:     "not JSON - regular string",
@@ -413,12 +422,12 @@ func TestJSONFormatting(t *testing.T) {
 		{
 			name:     "empty JSON object",
 			input:    `{}`,
-			expected: "{}",
+			expected: "JSON {}",
 		},
 		{
 			name:     "empty JSON array",
 			input:    `[]`,
-			expected: "[]",
+			expected: "JSON []",
 		},
 	}
 
@@ -457,7 +466,9 @@ func TestJSONInStructs(t *testing.T) {
 }
 
 func TestSliceTruncation(t *testing.T) {
-	printer := New().WithColorMode(ColorNever).WithMaxSliceLength(6)
+	printer := New().WithMaxWidth(30).
+		WithColorMode(ColorNever).
+		WithMaxSliceLength(6)
 
 	tests := []struct {
 		name     string
@@ -477,7 +488,7 @@ func TestSliceTruncation(t *testing.T) {
 		{
 			name:     "long slice - truncated",
 			input:    []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
-			expected: "[\n  1,\n  2,\n  3,\n  ... 4 more elements ...,\n  8,\n  9,\n  10,\n  // Total length: 10\n]",
+			expected: "[\n  1,\n  2,\n  3,\n  ... 4 more elements ...,\n  8,\n  9,\n  10,\n  // len() = 10\n]",
 		},
 	}
 
@@ -667,14 +678,14 @@ func TestStructNameOmissionInMaps(t *testing.T) {
 			input: map[string]Person{
 				"Person": {Name: "John", Age: 30},
 			},
-			expected: `{Person: {Name: "John", Age: 30}}`,
+			expected: `{ Person: { Name: "John", Age: 30 } }`,
 		},
 		{
 			name: "map with string key not matching struct name",
 			input: map[string]Person{
 				"user": {Name: "John", Age: 30},
 			},
-			expected: `{user: Person{Name: "John", Age: 30}}`,
+			expected: `{ user: Person{ Name: "John", Age: 30 } }`,
 		},
 		{
 			name: "map with multiple entries, some matching struct names",
@@ -683,21 +694,21 @@ func TestStructNameOmissionInMaps(t *testing.T) {
 				"Address": Address{Street: "123 Main St", City: "Anytown"},
 				"other":   Person{Name: "Jane", Age: 25},
 			},
-			expected: `{Address: {Street: "123 Main St", City: "Anytown"}, Person: {Name: "John", Age: 30}, other: Person{Name: "Jane", Age: 25}}`,
+			expected: `{ Address: { Street: "123 Main St", City: "Anytown" }, Person: { Name: "John", Age: 30 }, other: Person{ Name: "Jane", Age: 25 } }`,
 		},
 		{
 			name: "map with non-string keys should not affect struct names",
 			input: map[int]Person{
 				1: {Name: "John", Age: 30},
 			},
-			expected: `{1: Person{Name: "John", Age: 30}}`,
+			expected: `{ 1: Person{ Name: "John", Age: 30 } }`,
 		},
 		{
 			name: "map with non-struct values should not be affected",
 			input: map[string]string{
 				"Person": "not a struct",
 			},
-			expected: `{Person: "not a struct"}`,
+			expected: `{ Person: "not a struct" }`,
 		},
 		{
 			name: "struct field name matches struct type name",
@@ -714,7 +725,7 @@ func TestStructNameOmissionInMaps(t *testing.T) {
 				}{Name: "John", Age: 30},
 				Other: "test",
 			},
-			expected: `{Person: {Name: "John", Age: 30}, Other: "test"}`,
+			expected: `{ Person: { Name: "John", Age: 30 }, Other: "test" }`,
 		},
 	}
 
@@ -729,4 +740,129 @@ func TestStructNameOmissionInMaps(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCycleDetection(t *testing.T) {
+	printer := New().WithColorMode(ColorNever).WithMaxWidth(100)
+
+	t.Run("self-referencing struct", func(t *testing.T) {
+		type Node struct {
+			Value int
+			Next  *Node
+		}
+
+		// Create a circular reference
+		node1 := &Node{Value: 1}
+		node2 := &Node{Value: 2, Next: node1}
+		node1.Next = node2
+
+		result := printer.Print(node1)
+
+		// Should contain cycle detection
+		if !hasCycle(result) {
+			t.Errorf("Expected cycle detection in result: %s", result)
+		}
+	})
+
+	t.Run("circular slice", func(t *testing.T) {
+		// Create a slice that references itself through interface{}
+		slice := make([]interface{}, 2)
+		slice[0] = "item"
+		slice[1] = slice // Self-reference
+
+		result := printer.Print(slice)
+
+		// Should contain cycle detection
+		if !hasCycle(result) {
+			t.Errorf("Expected cycle detection in result: %s", result)
+		}
+	})
+
+	t.Run("circular map", func(t *testing.T) {
+		// Create a map that references itself through interface{}
+		m := make(map[string]interface{})
+		m["key"] = "value"
+		m["self"] = m // Self-reference
+
+		result := printer.Print(m)
+
+		// Should contain cycle detection
+		if !hasCycle(result) {
+			t.Errorf("Expected cycle detection in result: %s", result)
+		}
+	})
+
+	t.Run("indirect circular reference", func(t *testing.T) {
+		// Use interface{} to create indirect circular references
+		type Container struct {
+			Name string
+			Ref  interface{}
+		}
+
+		container1 := &Container{Name: "first"}
+		container2 := &Container{Name: "second", Ref: container1}
+		container1.Ref = container2
+
+		result := printer.Print(container1)
+
+		// Should contain cycle detection
+		if !hasCycle(result) {
+			t.Errorf("Expected cycle detection in result: %s", result)
+		}
+	})
+
+	t.Run("deeply nested structure with cycle", func(t *testing.T) {
+		type Node struct {
+			ID       int
+			Children []*Node
+			Parent   *Node
+		}
+
+		root := &Node{ID: 1, Children: make([]*Node, 0)}
+		child1 := &Node{ID: 2, Parent: root}
+		child2 := &Node{ID: 3, Parent: root}
+
+		root.Children = append(root.Children, child1, child2)
+
+		// Create a cycle by making child1 point back to root in its children
+		child1.Children = []*Node{root}
+
+		result := printer.Print(root)
+
+		// Should contain cycle detection
+		if !hasCycle(result) {
+			t.Errorf("Expected cycle detection in result: %s", result)
+		}
+	})
+
+	t.Run("no false positives", func(t *testing.T) {
+		// Test that similar but non-cyclic structures don't trigger false positives
+		type Node struct {
+			Value int
+			Next  *Node
+		}
+
+		// Create a linear chain (no cycles)
+		node1 := &Node{Value: 1}
+		node2 := &Node{Value: 2}
+		node3 := &Node{Value: 3}
+		node1.Next = node2
+		node2.Next = node3
+
+		result := printer.Print(node1)
+
+		// Should NOT contain cycle detection
+		if hasCycle(result) {
+			t.Errorf("Unexpected cycle detection in non-cyclic structure: %s", result)
+		}
+
+		// Should contain all values
+		if !strings.Contains(result, "1") || !strings.Contains(result, "2") || !strings.Contains(result, "3") {
+			t.Errorf("Expected all node values in result: %s", result)
+		}
+	})
+}
+
+func hasCycle(result string) bool {
+	return strings.Contains(result, "→#")
 }
