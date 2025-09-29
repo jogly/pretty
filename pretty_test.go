@@ -2,6 +2,7 @@ package pretty
 
 import (
 	"io"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func TestPrint(t *testing.T) {
 				Active: true,
 				Tags:   []string{"admin", "user"},
 			},
-			expected: "NestedStruct{\n  User: TestStruct{\n    Name: \"Alice\",\n    Age: 25,\n    Email: \"alice@example.com\"\n  },\n  Active: true,\n  Tags: [\"admin\", \"user\"]\n}",
+			expected: "NestedStruct{\n  User: {\n    Name: \"Alice\",\n    Age: 25,\n    Email: \"alice@example.com\"\n  },\n  Active: true,\n  Tags: [\"admin\", \"user\"]\n}",
 		},
 		{
 			name:     "long slice multi-line",
@@ -859,6 +860,367 @@ func TestCycleDetection(t *testing.T) {
 		// Should contain all values
 		if !strings.Contains(result, "1") || !strings.Contains(result, "2") || !strings.Contains(result, "3") {
 			t.Errorf("Expected all node values in result: %s", result)
+		}
+	})
+}
+
+func TestUUIDDetection(t *testing.T) {
+	t.Run("valid UUID v4 byte slice", func(t *testing.T) {
+		// Create a valid UUID v4: 550e8400-e29b-41d4-a716-446655440000
+		uuid := []byte{
+			0x55, 0x0e, 0x84, 0x00, // time_low
+			0xe2, 0x9b, // time_mid
+			0x41, 0xd4, // time_hi_and_version (version 4)
+			0xa7, 0x16, // clock_seq_hi_and_reserved (variant bits) + clock_seq_low
+			0x44, 0x66, 0x55, 0x44, 0x00, 0x00, // node
+		}
+
+		result := Print(uuid)
+
+		// Should format as UUID string, not as byte array
+		if strings.Contains(result, "[") || strings.Contains(result, "]") {
+			t.Errorf("UUID should not be formatted as array, got: %s", result)
+		}
+
+		// Should contain dashes (UUID format)
+		if !strings.Contains(result, "-") {
+			t.Errorf("UUID should contain dashes, got: %s", result)
+		}
+
+		// Should match expected UUID string format
+		expected := "550e8400-e29b-41d4-a716-446655440000"
+		if !strings.Contains(result, expected) {
+			t.Errorf("Expected UUID string %s to be in result: %s", expected, result)
+		}
+	})
+
+	t.Run("valid UUID v4 byte array", func(t *testing.T) {
+		// Create a valid UUID v4 as array
+		var uuid [16]byte = [16]byte{
+			0x6b, 0xa7, 0xb8, 0x10, // time_low
+			0x9d, 0xad, // time_mid
+			0x41, 0x1f, // time_hi_and_version (version 4)
+			0xad, 0xc8, // clock_seq_hi_and_reserved + clock_seq_low
+			0x00, 0x0c, 0x29, 0x48, 0xe9, 0x22, // node
+		}
+
+		result := Print(uuid)
+
+		// Should format as UUID string, not as byte array
+		if strings.Contains(result, "[") || strings.Contains(result, "]") {
+			t.Errorf("UUID should not be formatted as array, got: %s", result)
+		}
+
+		// Should contain dashes (UUID format)
+		if !strings.Contains(result, "-") {
+			t.Errorf("UUID should contain dashes, got: %s", result)
+		}
+
+		// Should match expected UUID string format
+		expected := "6ba7b810-9dad-411f-adc8-000c2948e922"
+		if !strings.Contains(result, expected) {
+			t.Errorf("Expected UUID string %s to be in result: %s", expected, result)
+		}
+	})
+
+	t.Run("invalid UUID - wrong length", func(t *testing.T) {
+		// Not 16 bytes
+		notUUID := []byte{1, 2, 3, 4, 5}
+
+		result := Print(notUUID)
+
+		// Should be formatted as regular byte slice
+		if !strings.Contains(result, "[") || !strings.Contains(result, "]") {
+			t.Errorf("Non-UUID bytes should be formatted as array, got: %s", result)
+		}
+
+		// Should not contain dashes
+		if strings.Contains(result, "-") {
+			t.Errorf("Non-UUID should not contain dashes, got: %s", result)
+		}
+	})
+
+	t.Run("invalid UUID - wrong version", func(t *testing.T) {
+		// Invalid version (0)
+		invalidUUID := []byte{
+			0x55, 0x0e, 0x84, 0x00, // time_low
+			0xe2, 0x9b, // time_mid
+			0x01, 0xd4, // time_hi_and_version (version 0 - invalid)
+			0xa7, 0x16, // clock_seq_hi_and_reserved + clock_seq_low
+			0x44, 0x66, 0x55, 0x44, 0x00, 0x00, // node
+		}
+
+		result := Print(invalidUUID)
+
+		// Should be formatted as regular byte slice
+		if !strings.Contains(result, "[") || !strings.Contains(result, "]") {
+			t.Errorf("Invalid UUID should be formatted as array, got: %s", result)
+		}
+	})
+
+	t.Run("non-byte slice", func(t *testing.T) {
+		// Not a byte slice
+		intSlice := []int{1, 2, 3, 4, 5}
+
+		result := Print(intSlice)
+
+		// Should be formatted as regular slice
+		if !strings.Contains(result, "[") || !strings.Contains(result, "]") {
+			t.Errorf("Int slice should be formatted as array, got: %s", result)
+		}
+
+		// Should not contain dashes
+		if strings.Contains(result, "-") {
+			t.Errorf("Int slice should not contain dashes, got: %s", result)
+		}
+	})
+
+	t.Run("UUID in struct", func(t *testing.T) {
+		type User struct {
+			ID   []byte
+			Name string
+		}
+
+		// Valid UUID
+		uuid := []byte{
+			0x6b, 0xa7, 0xb8, 0x10, // time_low
+			0x9d, 0xad, // time_mid
+			0x41, 0x1f, // time_hi_and_version (version 4)
+			0xad, 0xc8, // clock_seq_hi_and_reserved + clock_seq_low
+			0x00, 0x0c, 0x29, 0x48, 0xe9, 0x22, // node
+		}
+
+		user := User{
+			ID:   uuid,
+			Name: "John Doe",
+		}
+
+		result := Print(user)
+
+		// Should contain UUID string format
+		expectedUUID := "6ba7b810-9dad-411f-adc8-000c2948e922"
+		if !strings.Contains(result, expectedUUID) {
+			t.Errorf("Expected UUID string %s in struct result: %s", expectedUUID, result)
+		}
+
+		// Should contain user name
+		if !strings.Contains(result, "John Doe") {
+			t.Errorf("Expected user name in result: %s", result)
+		}
+	})
+}
+
+func TestUUIDStringDetection(t *testing.T) {
+	t.Run("valid UUID v4 string", func(t *testing.T) {
+		uuid := "550e8400-e29b-41d4-a716-446655440000"
+		result := Print(uuid)
+
+		// Should not be formatted as a regular quoted string
+		if strings.Contains(result, `"`) {
+			t.Errorf("UUID string should not have quotes, got: %s", result)
+		}
+
+		// Should contain the UUID string itself
+		if !strings.Contains(result, uuid) {
+			t.Errorf("Expected UUID string %s in result: %s", uuid, result)
+		}
+	})
+
+	t.Run("valid UUID v1 string", func(t *testing.T) {
+		uuid := "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+		result := Print(uuid)
+
+		// Should not be formatted as a regular quoted string
+		if strings.Contains(result, `"`) {
+			t.Errorf("UUID string should not have quotes, got: %s", result)
+		}
+
+		// Should contain the UUID string itself
+		if !strings.Contains(result, uuid) {
+			t.Errorf("Expected UUID string %s in result: %s", uuid, result)
+		}
+	})
+
+	t.Run("invalid UUID - wrong format", func(t *testing.T) {
+		notUUID := "not-a-uuid-at-all"
+		result := Print(notUUID)
+
+		// Should be formatted as regular quoted string
+		if !strings.Contains(result, `"`) {
+			t.Errorf("Non-UUID string should have quotes, got: %s", result)
+		}
+
+		// Should contain the string with quotes
+		expected := `"not-a-uuid-at-all"`
+		if !strings.Contains(result, expected) {
+			t.Errorf("Expected quoted string %s in result: %s", expected, result)
+		}
+	})
+
+	t.Run("invalid UUID - wrong length", func(t *testing.T) {
+		notUUID := "550e8400-e29b-41d4-a716-44665544"
+		result := Print(notUUID)
+
+		// Should be formatted as regular quoted string
+		if !strings.Contains(result, `"`) {
+			t.Errorf("Invalid UUID string should have quotes, got: %s", result)
+		}
+	})
+
+	t.Run("invalid UUID - missing dashes", func(t *testing.T) {
+		notUUID := "550e8400e29b41d4a716446655440000"
+		result := Print(notUUID)
+
+		// Should be formatted as regular quoted string
+		if !strings.Contains(result, `"`) {
+			t.Errorf("Invalid UUID string should have quotes, got: %s", result)
+		}
+	})
+
+	t.Run("UUID strings in struct", func(t *testing.T) {
+		type User struct {
+			ID       string
+			Name     string
+			PublicID string
+		}
+
+		user := User{
+			ID:       "6ba7b810-9dad-411f-adc8-000c2948e922",
+			Name:     "John Doe",
+			PublicID: "not-a-uuid",
+		}
+
+		result := Print(user)
+
+		// Should contain UUID string without quotes
+		expectedUUID := "6ba7b810-9dad-411f-adc8-000c2948e922"
+		if !strings.Contains(result, expectedUUID) {
+			t.Errorf("Expected UUID string %s in struct result: %s", expectedUUID, result)
+		}
+
+		// Should contain regular string with quotes
+		expectedName := `"John Doe"`
+		if !strings.Contains(result, expectedName) {
+			t.Errorf("Expected quoted string %s in struct result: %s", expectedName, result)
+		}
+
+		// Should contain non-UUID string with quotes
+		expectedPublicID := `"not-a-uuid"`
+		if !strings.Contains(result, expectedPublicID) {
+			t.Errorf("Expected quoted string %s in struct result: %s", expectedPublicID, result)
+		}
+	})
+
+	t.Run("uppercase UUID string", func(t *testing.T) {
+		uuid := "550E8400-E29B-41D4-A716-446655440000"
+		result := Print(uuid)
+
+		// Should not be formatted as a regular quoted string
+		if strings.Contains(result, `"`) {
+			t.Errorf("UUID string should not have quotes, got: %s", result)
+		}
+
+		// Should contain the UUID string itself
+		if !strings.Contains(result, uuid) {
+			t.Errorf("Expected UUID string %s in result: %s", uuid, result)
+		}
+	})
+}
+
+func TestConcreteTypeStructNameOmission(t *testing.T) {
+	type Address struct {
+		Street string
+		City   string
+	}
+
+	type Person struct {
+		Name    string
+		Address Address     // Concrete type - should omit struct name
+		Data    interface{} // Interface type - should keep struct name
+	}
+
+	t.Run("concrete type field omits struct name", func(t *testing.T) {
+		person := Person{
+			Name: "John",
+			Address: Address{
+				Street: "123 Main St",
+				City:   "Springfield",
+			},
+			Data: Address{
+				Street: "456 Oak Ave",
+				City:   "Shelbyville",
+			},
+		}
+
+		result := Print(person)
+
+		// Address field (concrete type) should NOT have "Address" prefix
+		// Should see: Address: { Street: "123 Main St", City: "Springfield" }
+		addressPattern := `Address:\s*{\s*Street:\s*"123 Main St",\s*City:\s*"Springfield"\s*}`
+		if !regexp.MustCompile(addressPattern).MatchString(result) {
+			t.Errorf("Expected Address field without struct name, got: %s", result)
+		}
+
+		// Data field (interface type) should HAVE "Address" prefix
+		// Should see: Data: Address{ Street: "456 Oak Ave", City: "Shelbyville" }
+		dataPattern := `Data:\s*Address{\s*Street:\s*"456 Oak Ave",\s*City:\s*"Shelbyville"\s*}`
+		if !regexp.MustCompile(dataPattern).MatchString(result) {
+			t.Errorf("Expected Data field with struct name, got: %s", result)
+		}
+	})
+
+	t.Run("pointer to concrete type omits struct name", func(t *testing.T) {
+		type Company struct {
+			Name    string
+			Address *Address // Pointer to concrete type - should omit struct name
+		}
+
+		company := Company{
+			Name: "Acme Corp",
+			Address: &Address{
+				Street: "789 Business Blvd",
+				City:   "Commerce City",
+			},
+		}
+
+		result := Print(company)
+
+		// Address field (pointer to concrete type) should NOT have "Address" prefix
+		addressPattern := `Address:\s*{\s*Street:\s*"789 Business Blvd",\s*City:\s*"Commerce City"\s*}`
+		if !regexp.MustCompile(addressPattern).MatchString(result) {
+			t.Errorf("Expected Address field without struct name for pointer type, got: %s", result)
+		}
+	})
+
+	t.Run("nested concrete types omit struct names", func(t *testing.T) {
+		type Contact struct {
+			Email string
+			Phone string
+		}
+
+		type Employee struct {
+			Name    string
+			Address Address // Concrete type
+			Contact Contact // Concrete type
+		}
+
+		employee := Employee{
+			Name:    "Alice",
+			Address: Address{Street: "100 Work St", City: "Office Town"},
+			Contact: Contact{Email: "alice@company.com", Phone: "555-0123"},
+		}
+
+		result := Print(employee)
+
+		// Both Address and Contact should omit struct names
+		addressPattern := `Address:\s*{\s*Street:\s*"100 Work St",\s*City:\s*"Office Town"\s*}`
+		contactPattern := `Contact:\s*{\s*Email:\s*"alice@company.com",\s*Phone:\s*"555-0123"\s*}`
+
+		if !regexp.MustCompile(addressPattern).MatchString(result) {
+			t.Errorf("Expected Address field without struct name, got: %s", result)
+		}
+		if !regexp.MustCompile(contactPattern).MatchString(result) {
+			t.Errorf("Expected Contact field without struct name, got: %s", result)
 		}
 	})
 }

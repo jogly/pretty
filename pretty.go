@@ -75,6 +75,8 @@ var (
 
 var (
 	timeType = reflect.TypeOf(time.Time{})
+
+	Default = New()
 )
 
 // Printer configures and performs pretty printing
@@ -89,6 +91,14 @@ type Printer struct {
 	// MaxStringLength is the maximum length for individual strings before truncation
 	// If 0, no truncation is applied (default behavior)
 	MaxStringLength int
+	// MaxKeysInline is the maximum number of keys to show in maps & structs
+	// inline before breaking to multiple lines. This allows maps and structs to
+	// be multi-lined before the overall max width is reached.
+	MaxKeysInline int
+	// Margin adds space around the output
+	// If 0, no margin is applied (default behavior)
+	Margin [4]int
+
 	// Styles holds the lipgloss Styles for different semantic purposes
 	Styles struct {
 		Error       lipgloss.Style // for errors and invalid values
@@ -115,6 +125,7 @@ func New() *Printer {
 		ColorMode:       ColorAuto,
 		MaxSliceLength:  20,
 		MaxStringLength: 0, // No string truncation by default
+		Margin:          [4]int{0, 0, 0, 0},
 	}
 
 	// Initialize semantic lipgloss styles
@@ -144,6 +155,11 @@ func (p *Printer) Print(v interface{}) string {
 	p.visited = make(map[uintptr]bool)
 	p.cycled = make(map[uintptr]bool)
 	defer clear(p.visited)
+
+	if p.Margin[0] != 0 || p.Margin[1] != 0 || p.Margin[2] != 0 || p.Margin[3] != 0 {
+		style := lipgloss.NewStyle().Margin(p.Margin[0], p.Margin[1], p.Margin[2], p.Margin[3])
+		return style.Render(p.formatValue(val, 0))
+	}
 
 	return p.formatValue(val, 0)
 }
@@ -182,6 +198,32 @@ func (p *Printer) WithMaxStringLength(maxLen int) *Printer {
 	return newP
 }
 
+func (p *Printer) WithMargin(margin ...int) *Printer {
+	switch len(margin) {
+	case 1:
+		p.Margin[0] = margin[0]
+		p.Margin[1] = margin[0]
+		p.Margin[2] = margin[0]
+		p.Margin[3] = margin[0]
+	case 2:
+		p.Margin[0] = margin[0]
+		p.Margin[1] = margin[1]
+		p.Margin[2] = margin[0]
+		p.Margin[3] = margin[1]
+	case 3:
+		p.Margin[0] = margin[0]
+		p.Margin[1] = margin[1]
+		p.Margin[2] = margin[2]
+		p.Margin[3] = margin[0]
+	case 4:
+		p.Margin[0] = margin[0]
+		p.Margin[1] = margin[1]
+		p.Margin[2] = margin[2]
+		p.Margin[3] = margin[3]
+	}
+	return p
+}
+
 // shouldUseColors determines if colors should be used based on the color mode
 func (p *Printer) shouldUseColors() bool {
 	switch p.ColorMode {
@@ -215,27 +257,29 @@ func (p *Printer) colorize(text string, style lipgloss.Style) string {
 
 // compoundFormatter handles single-line vs multi-line formatting for compound types
 type compoundFormatter struct {
-	p            *Printer
-	openBrace    string
-	closeBrace   string
-	typeName     string
-	singleItems  []string
-	multiItems   []string
-	indent       int
-	currentWidth int  // Running tally of visible width
-	exceedsWidth bool // Early escape flag when width is exceeded
-	padBraces    bool // Whether to pad the braces with spaces in single-line format
+	p             *Printer
+	openBrace     string
+	closeBrace    string
+	typeName      string
+	singleItems   []string
+	multiItems    []string
+	indent        int
+	currentWidth  int  // Running tally of visible width
+	exceedsWidth  bool // Early escape flag when width is exceeded
+	padBraces     bool // Whether to pad the braces with spaces in single-line format
+	maxKeysInline int
 }
 
 // newCompoundFormatter creates a new compound formatter
-func (p *Printer) newCompoundFormatter(openBrace, closeBrace, typeName string, indent int, padBraces bool) *compoundFormatter {
+func (p *Printer) newCompoundFormatter(openBrace, closeBrace, typeName string, indent int, padBraces bool, maxKeysInline int) *compoundFormatter {
 	cf := &compoundFormatter{
-		p:          p,
-		openBrace:  openBrace,
-		closeBrace: closeBrace,
-		typeName:   typeName,
-		indent:     indent,
-		padBraces:  padBraces,
+		p:             p,
+		openBrace:     openBrace,
+		closeBrace:    closeBrace,
+		typeName:      typeName,
+		indent:        indent,
+		padBraces:     padBraces,
+		maxKeysInline: maxKeysInline,
 	}
 
 	// Initialize width with opening elements
@@ -261,12 +305,17 @@ func (cf *compoundFormatter) addItem(singleItem, multiItem string) {
 
 		cf.currentWidth += itemWidth
 
-		// Check if adding this item would exceed the width limit
-		closingWidth := lipgloss.Width(cf.closeBrace)
-		if cf.currentWidth+closingWidth > cf.p.MaxWidth {
+		// Check if we've reached the maximum number of keys to show inline
+		if cf.maxKeysInline > 0 && len(cf.singleItems) >= cf.maxKeysInline {
 			cf.exceedsWidth = true
 		} else {
-			cf.singleItems = append(cf.singleItems, singleItem)
+			// Check if adding this item would exceed the width limit
+			closingWidth := lipgloss.Width(cf.closeBrace)
+			if cf.currentWidth+closingWidth > cf.p.MaxWidth {
+				cf.exceedsWidth = true
+			} else {
+				cf.singleItems = append(cf.singleItems, singleItem)
+			}
 		}
 	}
 
@@ -341,24 +390,52 @@ func (p *Printer) isSpecialHandledType(val reflect.Value) bool {
 	return val.Type() == timeType
 }
 
-// shouldOmitStructName checks if struct name should be omitted based on key/field name matching
-func (p *Printer) shouldOmitStructName(keyOrFieldName string, val reflect.Value) bool {
-	// Handle interface-wrapped structs
-	actualValue := val
+// unwrapInterface extracts the underlying value from interface wrappers
+func (p *Printer) unwrapInterface(val reflect.Value) reflect.Value {
 	if val.Kind() == reflect.Interface && !val.IsNil() {
-		actualValue = val.Elem()
+		return val.Elem()
+	}
+	return val
+}
+
+// shouldOmitStructName checks if struct name should be omitted based on different criteria
+func (p *Printer) shouldOmitStructName(keyOrFieldName string, val reflect.Value, fieldType reflect.Type) bool {
+	// Handle interface-wrapped structs
+	actualValue := p.unwrapInterface(val)
+
+	// Only consider struct values (including structs pointed to by pointers)
+	structVal := actualValue
+	if actualValue.Kind() == reflect.Ptr {
+		if actualValue.IsNil() || actualValue.Elem().Kind() != reflect.Struct {
+			return false
+		}
+		structVal = actualValue.Elem()
+	} else if actualValue.Kind() != reflect.Struct {
+		return false
 	}
 
-	if actualValue.Kind() == reflect.Struct {
-		structTypeName := actualValue.Type().Name()
-		return keyOrFieldName == structTypeName
+	// If field type is provided, check if it's concrete (not interface)
+	if fieldType != nil {
+		// If field type is an interface, don't omit struct name
+		if fieldType.Kind() == reflect.Interface {
+			return false
+		}
+		// If field type is a pointer to an interface, don't omit struct name
+		if fieldType.Kind() == reflect.Ptr && fieldType.Elem().Kind() == reflect.Interface {
+			return false
+		}
+		// For concrete types, omit struct name
+		return true
 	}
-	return false
+
+	// Otherwise, check if field/key name matches struct type name
+	structTypeName := structVal.Type().Name()
+	return keyOrFieldName == structTypeName
 }
 
 // Print formats any input value into a pretty-printed string representation using default options
 func Print(v interface{}) string {
-	return New().Print(v)
+	return Default.Print(v)
 }
 
 // formatCyclePointer formats a pointer value for cycle display using Base64 encoding
@@ -383,6 +460,125 @@ func (p *Printer) formatCyclePointer(ptr uintptr) string {
 
 	// Format with dim style and parentheses
 	return p.colorize("#", p.Styles.Comment) + p.colorize(encoded, style)
+}
+
+// isUUID checks if a byte slice represents a valid UUID
+func isUUID(data []byte) bool {
+	// Standard UUID is 16 bytes
+	if len(data) != 16 {
+		return false
+	}
+
+	// Check UUID version (bits 12-15 of the time_hi_and_version field)
+	// Version should be 1-5 for valid UUIDs
+	version := (data[6] >> 4) & 0x0f
+	if version < 1 || version > 5 {
+		return false
+	}
+
+	// Check variant (bits 6-7 of the clock_seq_hi_and_reserved field)
+	// For RFC 4122 UUIDs, should be 10 binary (0x80-0xBF)
+	variant := (data[8] >> 6) & 0x03
+	return variant == 2 // 10 binary
+}
+
+// formatUUID formats a UUID byte slice using the pointer gamut coloring system
+func (p *Printer) formatUUID(data []byte) string {
+	// Format as standard UUID string: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+	uuidStr := fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		data[0:4],
+		data[4:6],
+		data[6:8],
+		data[8:10],
+		data[10:16],
+	)
+
+	// Use UUID bytes for consistent hash-based color selection
+	hasher := fnv.New64a()
+	hasher.Write(data)
+	hashedUUID := hasher.Sum64()
+
+	// Select color from pointer gamut using same logic as cycle pointers
+	style := pointerGamut[hashedUUID%uint64(len(pointerGamut))]
+
+	return p.colorize(uuidStr, style)
+}
+
+// isUUIDString checks if a string represents a valid UUID format
+func isUUIDString(str string) bool {
+	// Standard UUID string format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (36 characters)
+	if len(str) != 36 {
+		return false
+	}
+
+	// Check dash positions
+	if str[8] != '-' || str[13] != '-' || str[18] != '-' || str[23] != '-' {
+		return false
+	}
+
+	// Check that all other characters are valid hex digits
+	hexSegments := []string{str[0:8], str[9:13], str[14:18], str[19:23], str[24:36]}
+	for _, segment := range hexSegments {
+		for _, char := range segment {
+			if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// formatUUIDString formats a UUID string using the pointer gamut coloring system
+func (p *Printer) formatUUIDString(uuidStr string) string {
+	// Use the UUID string bytes for consistent hash-based color selection
+	hasher := fnv.New64a()
+	hasher.Write([]byte(uuidStr))
+	hashedUUID := hasher.Sum64()
+
+	// Select color from pointer gamut using same logic as cycle pointers
+	style := pointerGamut[hashedUUID%uint64(len(pointerGamut))]
+
+	return p.colorize(uuidStr, style)
+}
+
+// tryFormatAsUUID attempts to format a slice or array as a UUID if it contains UUID bytes
+func (p *Printer) tryFormatAsUUID(val reflect.Value) string {
+	// Only handle byte slices/arrays ([]byte or [N]byte where element type is uint8)
+	elemType := val.Type().Elem()
+	if elemType.Kind() != reflect.Uint8 {
+		return ""
+	}
+
+	// Convert to byte slice for UUID checking
+	var data []byte
+	switch val.Kind() {
+	case reflect.Slice:
+		if val.IsNil() {
+			return ""
+		}
+		// Convert slice to byte slice
+		data = make([]byte, val.Len())
+		for i := 0; i < val.Len(); i++ {
+			data[i] = byte(val.Index(i).Uint())
+		}
+	case reflect.Array:
+		// Convert array to byte slice
+		data = make([]byte, val.Len())
+		for i := 0; i < val.Len(); i++ {
+			data[i] = byte(val.Index(i).Uint())
+		}
+	default:
+		return ""
+	}
+
+	// Check if it's a valid UUID
+	if !isUUID(data) {
+		return ""
+	}
+
+	// Format as UUID with pointer gamut coloring
+	return p.formatUUID(data)
 }
 
 // appendCyclePointerIfNeeded checks if a value is cycled and appends pointer display
@@ -420,6 +616,11 @@ func PrintWidth(v interface{}, width int) string {
 
 // formatValue recursively formats a reflect.Value with proper indentation
 func (p *Printer) formatValue(val reflect.Value, indent int) string {
+	return p.formatValueWithOptions(val, indent, true)
+}
+
+// formatValueWithOptions recursively formats a reflect.Value with formatting options
+func (p *Printer) formatValueWithOptions(val reflect.Value, indent int, includeStructNames bool) string {
 	if !val.IsValid() {
 		return p.colorize("invalid", p.Styles.Error)
 	}
@@ -476,15 +677,19 @@ func (p *Printer) formatValue(val reflect.Value, indent int) string {
 	}
 
 	if val.Type() == timeType {
-		result = p.formatTime(val.Interface().(time.Time), indent)
+		result = p.formatTime(val.Interface().(time.Time))
 		return p.appendCyclePointerIfNeeded(result, val)
 	}
 
 	switch val.Kind() {
 	case reflect.String:
 		str := val.String()
-		// Check if string is valid JSON and pretty-print it
-		if js, ok := p.isJSON(str); ok {
+
+		// Check if string is a valid UUID and format it with pointer gamut coloring
+		if isUUIDString(str) {
+			result = p.formatUUIDString(str)
+		} else if js, ok := p.isJSON(str); ok {
+			// Check if string is valid JSON and pretty-print it
 			if prettyJSON := p.formatJSON(js, indent); prettyJSON != "" {
 				result = prettyJSON
 			}
@@ -512,24 +717,28 @@ func (p *Printer) formatValue(val reflect.Value, indent int) string {
 		if val.IsNil() {
 			result = p.colorize("nil", p.Styles.Null)
 		} else {
-			result = p.formatValue(val.Elem(), indent)
+			result = p.formatValueWithOptions(val.Elem(), indent, includeStructNames)
 		}
 
 	case reflect.Interface:
 		if val.IsNil() {
 			result = p.colorize("nil", p.Styles.Null)
 		} else {
-			result = p.formatValue(val.Elem(), indent)
+			result = p.formatValueWithOptions(val.Elem(), indent, includeStructNames)
 		}
 
 	case reflect.Slice, reflect.Array:
+		// Check for UUID byte slices first
+		if result := p.tryFormatAsUUID(val); result != "" {
+			return result
+		}
 		result = p.formatSlice(val, indent)
 
 	case reflect.Map:
 		result = p.formatMap(val, indent)
 
 	case reflect.Struct:
-		result = p.formatStruct(val, indent, true)
+		result = p.formatStruct(val, indent, includeStructNames)
 
 	case reflect.Chan:
 		result = p.formatChan(val)
@@ -561,7 +770,7 @@ func (p *Printer) formatSlice(val reflect.Value, indent int) string {
 	}
 
 	// Use the compound formatter for consistent single/multi-line logic
-	formatter := p.newCompoundFormatter("[", "]", "", indent, false)
+	formatter := p.newCompoundFormatter("[", "]", "", indent, false, 0)
 
 	for i := 0; i < val.Len(); i++ {
 		singleItem := p.formatValue(val.Index(i), 0)       // Single line with 0 indent
@@ -625,7 +834,7 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 	p.sortMapKeys(keys)
 
 	// Use the compound formatter for consistent single/multi-line logic
-	formatter := p.newCompoundFormatter("{", "}", "", indent, true)
+	formatter := p.newCompoundFormatter("{", "}", "", indent, true, p.MaxKeysInline)
 
 	for _, key := range keys {
 		keyStr := p.formatMapKey(key)
@@ -635,11 +844,8 @@ func (p *Printer) formatMap(val reflect.Value, indent int) string {
 		var singleValueStr, multiValueStr string
 		if key.Kind() == reflect.String && !p.isSpecialHandledType(mapValue) {
 			// Key matches struct name, format struct without type name
-			actualValue := mapValue
-			if mapValue.Kind() == reflect.Interface && !mapValue.IsNil() {
-				actualValue = mapValue.Elem()
-			}
-			omitStructName := p.shouldOmitStructName(key.String(), mapValue)
+			actualValue := p.unwrapInterface(mapValue)
+			omitStructName := p.shouldOmitStructName(key.String(), mapValue, nil)
 
 			// Only call formatStruct if the value is actually a struct
 			if omitStructName && actualValue.Kind() == reflect.Struct {
@@ -694,7 +900,7 @@ func (p *Printer) formatStruct(val reflect.Value, indent int, includeTypeName bo
 	if includeTypeName {
 		typeName = typ.Name()
 	}
-	formatter := p.newCompoundFormatter("{", "}", typeName, indent, true)
+	formatter := p.newCompoundFormatter("{", "}", typeName, indent, true, p.MaxKeysInline)
 
 	// Process exported fields
 	for i := 0; i < val.NumField(); i++ {
@@ -705,11 +911,11 @@ func (p *Printer) formatStruct(val reflect.Value, indent int, includeTypeName bo
 
 		fieldVal := val.Field(i)
 
-		// Check if field name matches struct type name and omit struct name if so
+		// Check if field has concrete type and omit struct name if so
 		var singleFieldStr, multiFieldStr string
-		if !p.isSpecialHandledType(fieldVal) && p.shouldOmitStructName(field.Name, fieldVal) {
-			singleFieldStr = p.formatStruct(fieldVal, 0, false)
-			multiFieldStr = p.formatStruct(fieldVal, indent+1, false)
+		if !p.isSpecialHandledType(fieldVal) && p.shouldOmitStructName(field.Name, fieldVal, field.Type) {
+			singleFieldStr = p.formatValueWithOptions(fieldVal, 0, false)
+			multiFieldStr = p.formatValueWithOptions(fieldVal, indent+1, false)
 		} else {
 			singleFieldStr = p.formatValue(fieldVal, 0)
 			multiFieldStr = p.formatValue(fieldVal, indent+1)
@@ -826,7 +1032,7 @@ func (p *Printer) truncateString(str string) string {
 }
 
 // formatTime formats time.Time values using the relative time formatter
-func (p *Printer) formatTime(t time.Time, indent int) string {
+func (p *Printer) formatTime(t time.Time) string {
 	// Use the Time function from time.go for humanized relative time
 	formatted := Time(t)
 	if t.IsZero() {
@@ -854,12 +1060,4 @@ func (p *Printer) canFormCycles(val reflect.Value) bool {
 	default:
 		return false
 	}
-}
-
-// Checks if a value has been omitted due to a cycle.
-func (p *Printer) isCycled(val reflect.Value) bool {
-	if val.CanAddr() {
-		return p.cycled[uintptr(val.Addr().UnsafePointer())]
-	}
-	return false
 }

@@ -68,93 +68,18 @@ printer := pretty.New().WithColorMode(pretty.ColorAlways)
 printer := pretty.New().WithColorMode(pretty.ColorNever)
 ```
 
-## Color Scheme
-
-When colors are enabled:
-
-- **Strings**: Green
-- **Numbers**: Blue
-- **Booleans**: Yellow
-- **Floats**: Cyan
-- **nil/invalid**: Gray
-- **Errors**: Red
-
 ## Examples
 
-### Simple Data Types
+Visual comparison between this library and `spew.Dump`:
 
-```go
-pretty.Print("hello")     // "hello" (green if colors enabled)
-pretty.Print(42)          // 42 (blue if colors enabled)
-pretty.Print(true)        // true (yellow if colors enabled)
-pretty.Print(nil)         // nil (gray if colors enabled)
-```
+| Pretty Output | Spew Output |
+|---------------|-------------|
+| <img src="images/01_nested_structs_pretty.png" width="400" height="300" style="object-fit: contain;" alt="Nested Structs Pretty"> | <img src="images/01_nested_structs_spew.png" width="400" height="300" style="object-fit: contain;" alt="Nested Structs Spew"> |
+| <img src="images/02_cycle_detection_pretty.png" width="400" height="300" style="object-fit: contain;" alt="Cycle Detection Pretty"> | <img src="images/02_cycle_detection_spew.png" width="400" height="300" style="object-fit: contain;" alt="Cycle Detection Spew"> |
+| <img src="images/04_json_strings_pretty.png" width="400" height="300" style="object-fit: contain;" alt="JSON Strings Pretty"> | <img src="images/04_json_strings_spew.png" width="400" height="300" style="object-fit: contain;" alt="JSON Strings Spew"> |
+| <img src="images/05_slice_truncation_pretty.png" width="400" height="300" style="object-fit: contain;" alt="Slice Truncation Pretty"> | <img src="images/05_slice_truncation_spew.png" width="400" height="300" style="object-fit: contain;" alt="Slice Truncation Spew"> |
+| <img src="images/06_collections_width_pretty.png" width="400" height="300" style="object-fit: contain;" alt="Collections Width Pretty"> | <img src="images/06_collections_width_spew.png" width="400" height="300" style="object-fit: contain;" alt="Collections Width Spew"> |
+| <img src="images/07_uuid_detection_pretty.png" width="400" height="300" style="object-fit: contain;" alt="UUID Detection Pretty"> | <img src="images/07_uuid_detection_spew.png" width="400" height="300" style="object-fit: contain;" alt="UUID Detection Spew"> |
+| <img src="images/08_channels_pretty.png" width="400" height="300" style="object-fit: contain;" alt="Channels Pretty"> | <img src="images/08_channels_spew.png" width="400" height="300" style="object-fit: contain;" alt="Channels Spew"> |
 
-### Complex Structures
-
-```go
-type Person struct {
-    Name    string
-    Age     int
-    Hobbies []string
-}
-
-person := Person{
-    Name:    "John",
-    Age:     30,
-    Hobbies: []string{"reading", "coding"},
-}
-
-fmt.Println(pretty.Print(person))
-```
-
-Output:
-
-```
-Person{
-  Name: "John",
-  Age: 30,
-  Hobbies: [
-    "reading",
-    "coding"
-  ]
-}
-```
-
-## API Reference
-
-### Types
-
-```go
-type ColorMode int
-
-const (
-    ColorAuto   ColorMode = iota  // Auto-detect terminal
-    ColorAlways                   // Always use colors
-    ColorNever                    // Never use colors
-)
-
-type Printer struct {
-    MaxWidth  int       // Maximum line width
-    ColorMode ColorMode // Color configuration
-}
-```
-
-### Functions
-
-```go
-// Create new printer with defaults
-func New() *Printer
-
-// Print with default settings
-func Print(v interface{}) string
-
-// Configure printer
-func (p *Printer) WithMaxWidth(width int) *Printer
-func (p *Printer) WithColorMode(mode ColorMode) *Printer
-func (p *Printer) Print(v interface{}) string
-```
-
-## License
-
-MIT
+> **Note**: Run `./bin/create_images.sh` to generate the example images shown above.
